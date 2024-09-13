@@ -34,7 +34,7 @@ class Embedder:
         # dtype = torch.bfloat16
         dtype = torch.float16
         model = AutoModelForSequenceClassification.from_pretrained(self.model_id, device_map="auto", 
-                               trust_remote_code=True, torch_dtype=dtype, low_cpu_mem_usage=True)
+                               trust_remote_code=True, torch_dtype=dtype)
         tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_fast=True)
         # torch.compile(model)
 
@@ -45,7 +45,7 @@ class Embedder:
         # dtype = torch.bfloat16
         dtype = torch.float16
         self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id, device_map="cpu", 
-                               trust_remote_code=True, torch_dtype=dtype, low_cpu_mem_usage=True)
+                               trust_remote_code=True, torch_dtype=dtype)
         self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_fast=True)
 
     @modal.enter(snap=False)
