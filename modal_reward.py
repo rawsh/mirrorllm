@@ -10,22 +10,22 @@ app = modal.App("dankreward", image=image)
 
 
 with image.imports():
+    from typing import List, Dict, Tuple
     import asyncio
-    from typing import List, Dict
     import torch
+    from time import perf_counter as pc
+    import copy
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    import os
+    # from lib import extract_tensors, test
+    # print(test())
 
-
-# @modal.web_endpoint(method="POST", docs=True)
 @app.cls(
-    gpu=modal.gpu.L4(),
-    # gpu=modal.gpu.T4(),
-    # enable_memory_snapshot=True,
-    # volumes={"/my_vol": modal.Volume.from_name("my-test-volume")},
-    container_idle_timeout=10
+    gpu=modal.gpu.A10G(),
+    container_idle_timeout=10,
+    volumes={"/data": modal.Volume.from_name("my-test-volume")}
 )
 class Embedder:
-
     model_id = "RLHFlow/ArmoRM-Llama3-8B-v0.1"
     device = "cuda"
 
@@ -34,40 +34,59 @@ class Embedder:
         # cache
         print("build")
         dtype = torch.bfloat16
-        # dtype = torch.float16
         with torch.device("cuda"):
+            print("[build] loading model")
+            start = pc()
             model = AutoModelForSequenceClassification.from_pretrained(self.model_id,
                                 trust_remote_code=True, torch_dtype=dtype, use_safetensors=True)
+            elapsed = pc() - start
+            print(f"[build] loading model took {elapsed} seconds")
 
-    # @modal.enter(snap=True)
-    # def load(self):
-    #     # Create a memory snapshot with the model loaded in CPU memory.
-    #     print("save state")
+            print("[build] compile model")
+            start = pc()
+            # model = torch.compile(model)
+            torch.compile(model)
+            elapsed = pc() - start
+            print(f"[build] compile model took {elapsed} seconds")
+
+            print("[build] save model")
+            start = pc()
+            model.save_pretrained("/data/saved_model", safe_serialization=True)
+            elapsed = pc() - start
+            print(f"[build] saving model took {elapsed} seconds")
 
     # @modal.enter(snap=False)
     @modal.enter()
     def setup(self):
-        # Move the model to a GPU before doing any work.
-        print("loaded from snapshot")
+        # Start the model to a GPU before doing any work.
+        print("setup")
+        os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
+        # faster model loading
         dtype = torch.bfloat16
         with torch.device("cuda"):
-            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id,
+            print("[setup] loading model")
+            start = pc()
+            self.model = AutoModelForSequenceClassification.from_pretrained("/data/saved_model",
                                 trust_remote_code=True, torch_dtype=dtype, use_safetensors=True)
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_fast=True)
+            elapsed = pc() - start
+            print(f"[setup] loading model took {elapsed} seconds")
 
-    # @modal.enter()
-    # def setup(self):
-    #     # Move the model to a GPU before doing any work.
-    #     print("loaded from snapshot")
-    #     dtype = torch.float16
-    #     self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id, device_map="auto", 
-    #                            trust_remote_code=True, torch_dtype=dtype, low_cpu_mem_usage=True)
-    #     self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_fast=True)
+            print("[setup] compile model")
+            start = pc()
+            model = torch.compile(model)
+            elapsed = pc() - start
+            print(f"[setup] compile model took {elapsed} seconds")
 
-    # @modal.method()
+        print("[setup] loading tokenizer")
+        start = pc()
+        self.tokenizer = AutoTokenizer.from_pretrained("/data/saved_model", use_fast=True)
+        elapsed = pc() - start
+        print(f"[setup] loading tokenizer took {elapsed} seconds")
+
     @modal.web_endpoint(method="POST", docs=True)
     def score_output(self, messages: List[Dict[str, str]]):
-        print("batched")
+        print("score_output")
         input_ids = self.tokenizer.apply_chat_template(
             messages,
             return_tensors="pt",
@@ -77,17 +96,10 @@ class Embedder:
         ).to("cuda")
         with torch.no_grad():
             output = self.model(input_ids)
+            print(output)
             float_output = output.score.float()
             print("Score:", float_output.item())
         return float_output.item()
-
-
-# @app.function()
-# @modal.web_endpoint(method="POST", docs=True)
-# async def run(messages: List[Dict[str, str]]):
-#     result = await Embedder().score_output.remote.aio(messages)
-#     print(messages, result)
-#     return {"result": result}
 
 
 # @app.local_entrypoint()
