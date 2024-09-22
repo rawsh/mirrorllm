@@ -22,8 +22,8 @@ with image.imports():
 
 @app.cls(
     gpu=modal.gpu.A10G(),
-    container_idle_timeout=10,
-    volumes={"/data": modal.Volume.from_name("my-test-volume")}
+    container_idle_timeout=30,
+    # volumes={"/data": modal.Volume.from_name("my-test-volume")}
 )
 class Embedder:
     model_id = "RLHFlow/ArmoRM-Llama3-8B-v0.1"
@@ -49,11 +49,11 @@ class Embedder:
             elapsed = pc() - start
             print(f"[build] compile model took {elapsed} seconds")
 
-            print("[build] save model")
-            start = pc()
-            model.save_pretrained("/data/saved_model", safe_serialization=True)
-            elapsed = pc() - start
-            print(f"[build] saving model took {elapsed} seconds")
+            # print("[build] save model")
+            # start = pc()
+            # model.save_pretrained("/data/saved_model", safe_serialization=True)
+            # elapsed = pc() - start
+            # print(f"[build] saving model took {elapsed} seconds")
 
     # @modal.enter(snap=False)
     @modal.enter()
@@ -67,20 +67,20 @@ class Embedder:
         with torch.device("cuda"):
             print("[setup] loading model")
             start = pc()
-            self.model = AutoModelForSequenceClassification.from_pretrained("/data/saved_model",
+            self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id,
                                 trust_remote_code=True, torch_dtype=dtype, use_safetensors=True)
             elapsed = pc() - start
             print(f"[setup] loading model took {elapsed} seconds")
 
-            print("[setup] compile model")
-            start = pc()
-            model = torch.compile(model)
-            elapsed = pc() - start
-            print(f"[setup] compile model took {elapsed} seconds")
+            # print("[setup] compile model")
+            # start = pc()
+            # self.model = torch.compile(self.model)
+            # elapsed = pc() - start
+            # print(f"[setup] compile model took {elapsed} seconds")
 
         print("[setup] loading tokenizer")
         start = pc()
-        self.tokenizer = AutoTokenizer.from_pretrained("/data/saved_model", use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, use_fast=True)
         elapsed = pc() - start
         print(f"[setup] loading tokenizer took {elapsed} seconds")
 
