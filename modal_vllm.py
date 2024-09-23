@@ -15,9 +15,13 @@ def download_model_to_image(model_dir, model_name, model_revision):
     )
     move_cache()
 
-MODEL_DIR = "/qwen"
-MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-MODEL_REVISION = "a8b602d9dafd3a75d382e62757d83d89fca3be54"
+# MODEL_DIR = "/qwen"
+# MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
+# MODEL_REVISION = "a8b602d9dafd3a75d382e62757d83d89fca3be54"
+
+MODEL_DIR = "/gemma"
+MODEL_NAME = "rawsh/mirrorgemma-2-2b-SFT"
+MODEL_REVISION = "6c27fa6de9b04f9d4fe4b8889ef53404f679bcf6"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -33,15 +37,17 @@ vllm_image = (
     .run_function(
         download_model_to_image,
         timeout=60 * 20,
+        secrets=[modal.Secret.from_name("hf-token")],
         kwargs={
             "model_dir": MODEL_DIR,
             "model_name": MODEL_NAME,
             "model_revision": MODEL_REVISION,
         },
     )
+    .env({"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"})
 )
 
-app = modal.App("vllm-qwen")
+app = modal.App("vllm-gemma")
 
 N_GPU = 1  # tip: for best results, first upgrade to more powerful GPUs, and only then increase GPU count
 
@@ -57,8 +63,11 @@ HOURS = 60 * MINUTES
     gpu=modal.gpu.A10G(count=N_GPU),
     container_idle_timeout=1 * MINUTES,
     timeout=20 * MINUTES,
-    allow_concurrent_inputs=1,
-    secrets=[modal.Secret.from_name("vllm-token")]
+    allow_concurrent_inputs=100,
+    secrets=[
+        modal.Secret.from_name("vllm-token"),
+        # modal.Secret.from_name("hf-token"),
+    ]
     # volumes={MODELS_DIR: volume},
 )
 @modal.asgi_app()

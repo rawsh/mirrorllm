@@ -10,7 +10,17 @@ curl -X 'POST'   'https://rawsh--vllm-qwen-serve.modal.run/v1/completions'   -H 
   ],
   "max_tokens": 200,
   "stop": ["\n\n## Step "],
-  "temperature": 1
+  "temperature": 0.7
+}'
+
+curl -X 'POST'   'https://rawsh--vllm-gemma-serve.modal.run/v1/completions'   -H 'accept: application/json'   -H 'Authorization: Bearer 9FF74944EED19865193F979942FB1'   -H 'Content-Type: application/json'   -d '{
+  "model": "rawsh/mirrorgemma-2-2b-SFT",
+  "prompt": [
+    "Find the least positive integer such that when its leftmost digit is deleted, the resulting integer is 1/29 of the original integer.\n\n"
+  ],
+  "max_tokens": 200,
+  "stop": ["\n"],
+  "temperature": 0.7
 }'
 ```
 

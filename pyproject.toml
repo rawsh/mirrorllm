@@ -8,6 +8,8 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 dspy-ai = "^2.4.16"
+torch = "^2.4.1"
+modal = "^0.64.131"
 
 
 [build-system]
