@@ -21,7 +21,7 @@ def download_model_to_image(model_dir, model_name, model_revision):
 
 MODEL_DIR = "/gemma"
 MODEL_NAME = "rawsh/mirrorgemma-2-2b-SFT"
-MODEL_REVISION = "6c27fa6de9b04f9d4fe4b8889ef53404f679bcf6"
+MODEL_REVISION = "0ec8c2eaead95160a9f908cd59f254bdace496bd"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -61,9 +61,9 @@ HOURS = 60 * MINUTES
     # gpu=modal.gpu.H100(count=N_GPU),
     # gpu=modal.gpu.A100(count=N_GPU, size="40GB"),
     gpu=modal.gpu.A10G(count=N_GPU),
-    container_idle_timeout=1 * MINUTES,
+    container_idle_timeout=2 * MINUTES,
     timeout=20 * MINUTES,
-    allow_concurrent_inputs=100,
+    allow_concurrent_inputs=1000,
     secrets=[
         modal.Secret.from_name("vllm-token"),
         # modal.Secret.from_name("hf-token"),

@@ -33,6 +33,7 @@ HOURS = 60 * MINUTES
     # gpu=modal.gpu.A10G(),
     gpu=modal.gpu.H100(),
     # gpu=modal.gpu.A100(count=4, size="40GB"),
+    # gpu=modal.gpu.A100(size="40GB"),
     timeout=20 * HOURS,
     secrets=[
         modal.Secret.from_name("hf-token"),

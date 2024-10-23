@@ -10,6 +10,8 @@ python = "^3.10"
 dspy-ai = "^2.4.16"
 torch = "^2.4.1"
 modal = "^0.64.131"
+cachetools = "^5.5.0"
+aiomultiprocess = "^0.9.1"
 
 
 [build-system]
