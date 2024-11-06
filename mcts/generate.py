@@ -7,15 +7,18 @@ from util import split_and_clean_steps, quality_filter, SEED
 from tqdm import tqdm
 
 client = AsyncOpenAI(
-    api_key="9FF74944EED19865193F979942FB1",
-    base_url="https://rawsh--vllm-qwen-serve.modal.run/v1"
+    api_key="9FF74944EED19865193F979942FB1",adfghk
+    base_url="https://rawsh--vllm-smollm-serve.modal.run/v1"
 )
 
 def format_thoughts(thoughts: List[str]) -> str:
     return "\n".join(f"## Step {i}:\n{thought}" for i, thought in enumerate(thoughts, 1))
 
-template = "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n\
-<|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant_partial}"
+# template = "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n\
+# <|im_start|>user\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant_partial}"
+
+template = "<|im_start|>system\nYou are a helpful AI assistant named SmolLM, trained by Hugging Face<|im_end|>\n\
+<|im_start|>human\n{user}<|im_end|>\n<|im_start|>assistant\n{assistant_partial}"
 
 class ReasoningTrace:
     def __init__(self, question: str, previous_thoughts: List[str], next_step: int):
@@ -36,10 +39,12 @@ async def generate_thought_batched(batch: List[ReasoningTrace]) -> List[Processe
         prompts.append(prompt)
 
     params = {
-        "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        # "model": "Qwen/Qwen2.5-0.5B-Instruct",
+        "model": "HuggingFaceTB/SmolLM2-135M-Instruct",
         "prompt": prompts,
         "max_tokens": 200,
-        "temperature": 0.7,
+        # "temperature": 0.7,
+        "temperature": 0.0,
         "stop": ["\n## Step"],
         "timeout": 600
     }
@@ -58,7 +63,7 @@ async def generate_thought_batched(batch: List[ReasoningTrace]) -> List[Processe
         return None
 
 async def format_thought_chain(question: str, chain: List[str]) -> List[ReasoningTrace]:
-    return [ReasoningTrace(question, chain[:i], i+1) for i in range(1, len(chain))]
+    return [ReasoningTrace(question, chain[:i], i+1) for i in range(0, len(chain))]
 
 async def process_batch(batch: List[ReasoningTrace], semaphore: asyncio.Semaphore) -> List[ProcessedReasoningTrace]:
     async with semaphore:

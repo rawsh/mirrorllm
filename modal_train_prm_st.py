@@ -19,31 +19,41 @@ image = (
         .pip_install("datasets")
         .pip_install("wandb")
         .pip_install("bitsandbytes")
-        .pip_install("unsloth")
+        .pip_install("matplotlib")
+        .pip_install("seaborn")
 )
-app = modal.App("train_policy_sft", image=image)
+app = modal.App("train_prm", image=image)
 
 with image.imports():
-    from mcts.train_policy_sft import train_sft
+    from mcts.train_reward import train_reward_model
 
 MINUTES = 60  # seconds
 HOURS = 60 * MINUTES
 
+vol = modal.Volume.from_name("prm-tmp", create_if_missing=True)
+
 @app.function(
     cpu=2.0,
-    gpu=modal.gpu.A10G(),
-    # gpu=modal.gpu.H100(),
+    # gpu=modal.gpu.A10G(),
+    gpu=modal.gpu.H100(),
+    # gpu=modal.gpu.A100(count=4, size="40GB"),
     # gpu=modal.gpu.A100(size="40GB"),
     timeout=20 * HOURS,
     secrets=[
         modal.Secret.from_name("hf-token"),
         modal.Secret.from_name("wandb-token")
-    ]
+    ],
+    volumes={"/out": vol},
 )
-def train_policy_model_sft_upload_to_hf():
-    train_sft()
+def train_reward_model_upload_to_hf():
+    train_reward_model(
+        model_name="rawsh/mirrorqwen2.5-0.5b-prm",
+        dataset_path="rawsh/magpie-ultra-v0.1-PRM-data-ST-0",
+        output_model_name="rawsh/mirrorqwen2.5-0.5b-PRM-ST-0",
+        disable_binning=True
+    )
 
 @app.local_entrypoint()
 def main():
     # run the function remotely on Modal
-    train_policy_model_sft_upload_to_hf.remote()
+    train_reward_model_upload_to_hf.remote()

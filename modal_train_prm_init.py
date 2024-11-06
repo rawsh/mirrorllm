@@ -19,6 +19,8 @@ image = (
         .pip_install("datasets")
         .pip_install("wandb")
         .pip_install("bitsandbytes")
+        .pip_install("matplotlib")
+        .pip_install("seaborn")
 )
 app = modal.App("train_prm", image=image)
 
@@ -28,17 +30,20 @@ with image.imports():
 MINUTES = 60  # seconds
 HOURS = 60 * MINUTES
 
+vol = modal.Volume.from_name("prm-tmp", create_if_missing=True)
+
 @app.function(
     cpu=2.0,
-    # gpu=modal.gpu.A10G(),
-    gpu=modal.gpu.H100(),
+    gpu=modal.gpu.A10G(),
+    # gpu=modal.gpu.H100(),
     # gpu=modal.gpu.A100(count=4, size="40GB"),
     # gpu=modal.gpu.A100(size="40GB"),
     timeout=20 * HOURS,
     secrets=[
         modal.Secret.from_name("hf-token"),
         modal.Secret.from_name("wandb-token")
-    ]
+    ],
+    volumes={"/out": vol},
 )
 def train_reward_model_upload_to_hf():
     train_reward_model()

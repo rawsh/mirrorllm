@@ -46,7 +46,8 @@ def train_sft():
     load_in_4bit = False # Use 4bit quantization to reduce memory usage. Can be False.
 
     model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name = "unsloth/gemma-2-2b",
+        # model_name = "unsloth/gemma-2-2b",
+        model_name = "Qwen/Qwen2.5-0.5B",
         max_seq_length = max_seq_length,
         dtype = dtype,
         load_in_4bit = load_in_4bit,
@@ -129,4 +130,5 @@ def train_sft():
 
     trainer_stats = trainer.train()
 
-    model.push_to_hub_merged("rawsh/mirrorgemma-2-2b-SFT", tokenizer, save_method = "merged_16bit")
+    # model.push_to_hub_merged("rawsh/mirrorgemma-2-2b-SFT", tokenizer, save_method = "merged_16bit")
+    model.push_to_hub_merged("rawsh/mirrorqwen2.5-0.5b-SFT", tokenizer, save_method = "merged_16bit")

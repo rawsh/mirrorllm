@@ -15,13 +15,21 @@ def download_model_to_image(model_dir, model_name, model_revision):
     )
     move_cache()
 
+MODEL_DIR = "/qwen"
+MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SFT"
+MODEL_REVISION = "1f75c1204888cc912ad0b186c5b7620235246ffa"
+
+# MODEL_DIR = "/smollm"
+# MODEL_NAME = "HuggingFaceTB/SmolLM2-135M-Instruct"
+# MODEL_REVISION = "7e27bd9f95328f0f3b08261d1252705110c806f8"
+
 # MODEL_DIR = "/qwen"
 # MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 # MODEL_REVISION = "a8b602d9dafd3a75d382e62757d83d89fca3be54"
 
-MODEL_DIR = "/gemma"
-MODEL_NAME = "rawsh/mirrorgemma-2-2b-SFT"
-MODEL_REVISION = "0ec8c2eaead95160a9f908cd59f254bdace496bd"
+# MODEL_DIR = "/gemma"
+# MODEL_NAME = "rawsh/mirrorgemma-2-2b-SFT"
+# MODEL_REVISION = "0ec8c2eaead95160a9f908cd59f254bdace496bd"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -47,7 +55,9 @@ vllm_image = (
     .env({"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"})
 )
 
-app = modal.App("vllm-gemma")
+
+# app = modal.App("vllm-smollm")
+app = modal.App("vllm-qwen-ft")
 
 N_GPU = 1  # tip: for best results, first upgrade to more powerful GPUs, and only then increase GPU count
 
@@ -59,7 +69,7 @@ HOURS = 60 * MINUTES
 @app.function(
     image=vllm_image,
     # gpu=modal.gpu.H100(count=N_GPU),
-    # gpu=modal.gpu.A100(count=N_GPU, size="40GB"),
+    # gpu=modal.gpu.A100(count=N_GPU, size="80GB"),
     gpu=modal.gpu.A10G(count=N_GPU),
     container_idle_timeout=2 * MINUTES,
     timeout=20 * MINUTES,

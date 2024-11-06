@@ -2,53 +2,55 @@ import modal
 
 image = (
     modal.Image.debian_slim()
-        .pip_install("torch")
-        .pip_install("transformers")
-        .pip_install("accelerate")
+        .pip_install([
+            "torch",
+            "transformers",
+            "accelerate",
+            "batched",
+        ])
 )
-app = modal.App("mirrorgemma-prm", image=image)
-
+app = modal.App("mirrorqwen-prm", image=image)
 
 with image.imports():
     from typing import List, Dict, Tuple
     import asyncio
     import torch
     from time import perf_counter as pc
-    import copy
-    # from transformers import AutoModelForSequenceClassification, AutoTokenizer
     from transformers import pipeline
     import os
-    # from lib import extract_tensors, test
-    # print(test())
+
+    class BatchProcessor:
+        def __init__(self):
+            import batched
+            self.batched = batched
+
+        def create_batch_processor(self, pipeline_func):
+            @self.batched.dynamically(batch_size=256, timeout_ms=100.0, small_batch_threshold=4)
+            def _process_batch(prompts: List[str]) -> List[Dict]:
+                return pipeline_func(prompts)
+            return _process_batch
 
 @app.cls(
     gpu=modal.gpu.A10G(),
+    # gpu=modal.gpu.H100(),
     container_idle_timeout=120,
-    # allow_concurrent_inputs=100,
-    # volumes={"/data": modal.Volume.from_name("my-test-volume")}
+    allow_concurrent_inputs=1000,
     secrets=[
         modal.Secret.from_name("hf-token"),
-        # modal.Secret.from_name("wandb-token")
     ],
 )
 class Embedder:
-    # model_id = "RLHFlow/ArmoRM-Llama3-8B-v0.1"
-    model_id = "rawsh/mirrorgemma-2-2b-prm-base"
-    revision = "a6bc6d57b3d7c873ba30e88ffd3e304e4758c295"
+    model_id = "rawsh/mirrorqwen2.5-0.5b-prm"
+    # revision = "a1cd3547343bab37ff61fd248ef46b779d5a8dfa" # base
+    revision = "3ad692bde328cddbfd45666cb6f7307430cac181"
     device = "cuda"
     print(model_id)
 
     @modal.build()
     def build(self):
-        # cache
         print("build")
         dtype = torch.bfloat16
         with torch.device("cuda"):
-            # from transformers import (
-            #     AutoTokenizer
-            # )
-            # tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-2b", use_auth_token=True)
-            # tokenizer.push_to_hub("rawsh/mirrorgemma-2-2b-PRM-base")
             print("[build] loading model")
             start = pc()
             classifier = pipeline("sentiment-analysis", model=self.model_id, revision=self.revision,
@@ -56,40 +58,65 @@ class Embedder:
             elapsed = pc() - start
             print(f"[build] loading model took {elapsed} seconds")
 
-    # @modal.enter(snap=False)
     @modal.enter()
     def setup(self):
-        # Start the model to a GPU before doing any work.
         print("setup")
-        # os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
-        # faster model loading
         dtype = torch.bfloat16
         with torch.device("cuda"):
             print("[setup] loading model")
             start = pc()
             self.pipeline = pipeline("sentiment-analysis", model=self.model_id, revision=self.revision,
-                                trust_remote_code=True, torch_dtype=dtype, device="cuda")
+                                trust_remote_code=True, torch_dtype=dtype, device="cuda", batch_size=256)
             elapsed = pc() - start
             print(f"[setup] loading model took {elapsed} seconds")
+            
+            # Initialize batch processor
+            batch_processor = BatchProcessor()
+            self._process_batch = batch_processor.create_batch_processor(self.pipeline)
 
     @modal.web_endpoint(method="POST", docs=True)
-    def score_output(self, inp: dict):
+    async def score_output(self, inp: dict):
         prompt = inp["prompt"]
-        print("score_output")
-        return self.pipeline(prompt)
+        # Handle both single inputs and lists of inputs
+        if isinstance(prompt, str):
+            prompts = [prompt]
+        else:
+            prompts = prompt
 
+        try:
+            # Use the batched processing method
+            results = await self._process_batch.acall(prompts)
+            
+            # Return single result if input was single, otherwise return list
+            if isinstance(inp["prompt"], str):
+                return results[0]
+            return results
+        except Exception as e:
+            return {"error": str(e)}
 
-# @app.local_entrypoint()
-# async def main():
-#     # score the messages
-#     prompt = 'What are some synonyms for the word "beautiful"?'
-#     response1 = 'Nicely, Beautifully, Handsome, Stunning, Wonderful, Gorgeous, Pretty, Stunning, Elegant'
-#     response2 = 'bad'
-#     messages1 = [{"role": "user", "content": prompt}, {"role": "assistant", "content": response1}]
-#     messages2 = [{"role": "user", "content": prompt}, {"role": "assistant", "content": response2}]
-#     m1 = Embedder().score_output(messages1)
-#     m2 = Embedder().score_output(messages2)
-#     res = await asyncio.gather(*[m1,m2])
-#     print(response1, res[0])
-#     print(response2, res[1])
+@app.local_entrypoint()
+async def main():
+    embedder = Embedder()
+    
+    # Test with multiple prompts
+    prompt = 'What are some synonyms for the word "beautiful"?'
+    response1 = 'Nicely, Beautifully, Handsome, Stunning, Wonderful, Gorgeous, Pretty, Stunning, Elegant'
+    response2 = 'bad'
+    
+    # Create batch of requests
+    inputs = [
+        {"prompt": response1},
+        {"prompt": response2}
+    ]
+    
+    # Process in parallel
+    results = await asyncio.gather(*[
+        embedder.score_output(inp) for inp in inputs
+    ])
+    
+    # Print results
+    for response, result in zip([response1, response2], results):
+        print(f"Response: {response}\nResult: {result}\n")
+    
+    # Print batching statistics
+    print("Batching stats:", embedder._process_batch.stats)
