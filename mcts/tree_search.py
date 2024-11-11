@@ -14,7 +14,7 @@ from tqdm.asyncio import tqdm as atqdm
 
 # URLs and configuration
 # POLICY_URL = 'https://rawsh--vllm-qwen-ft-serve.modal.run/v1/'
-POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-2'
+POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-3'
 POLICY_URL = 'https://rawsh--vllm-qwen-simpo-serve.modal.run/v1/'
 PRM_URL = 'https://rawsh--mirrorqwen-prm-embedder-score-output.modal.run'
 API_KEY = '9FF74944EED19865193F979942FB1'
