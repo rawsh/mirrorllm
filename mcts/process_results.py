@@ -24,6 +24,7 @@ class QuestionAnalysis:
     binary_success: bool  # Any correct path?
     sc_score: float  # Overall self-consistency score
     sc_correct_percent: float  # % of self-consistent answers that are correct
+    sc_most_common_correct: bool  # Whether most common answer is correct
     total_paths: int
     correct_paths: List[PathMetrics]
     incorrect_paths: List[PathMetrics]
@@ -66,7 +67,6 @@ class MathReasoningAnalyzer:
             return final_state.split('\\boxed{')[1].split('}')[0]
         return ''
 
-    # Changes to analyze_question method:
     def analyze_question(self, question: dict) -> QuestionAnalysis:
         """Analyze a single question's reasoning paths"""
         paths = []
@@ -80,7 +80,7 @@ class MathReasoningAnalyzer:
             path_metrics = PathMetrics(
                 answer=answer,
                 is_correct=path['correct'],
-                path_length=len(processed_steps),  # Use processed steps length
+                path_length=len(processed_steps),
                 prm_score=path['score'],
                 raw_steps=raw_steps,
                 steps=processed_steps
@@ -98,18 +98,24 @@ class MathReasoningAnalyzer:
             # Overall self-consistency
             most_common = answers.most_common()
             most_common_count = most_common[0][1] if most_common else 0
+            most_common_answer = most_common[0][0] if most_common else ''
             sc_score = most_common_count / total_paths
             
             # Calculate % of self-consistent answers that are correct
             sc_answers = [ans for ans, count in most_common 
-                         if count > total_paths * 0.2]  # Consider answers that appear >20% of time
+                        if count > total_paths * 0.2]  # Consider answers that appear >20% of time
             sc_correct = sum(1 for ans in sc_answers 
-                           if any(p.answer == ans and p.is_correct 
-                                 for p in correct_paths))
+                        if any(p.answer == ans and p.is_correct 
+                                for p in correct_paths))
             sc_correct_percent = sc_correct / len(sc_answers) if sc_answers else 0
+            
+            # Check if most common answer is correct
+            sc_most_common_correct = any(p.answer == most_common_answer and p.is_correct 
+                                    for p in correct_paths)
         else:
             sc_score = 0
             sc_correct_percent = 0
+            sc_most_common_correct = False
 
         return QuestionAnalysis(
             question_text=question['question'],
@@ -117,64 +123,78 @@ class MathReasoningAnalyzer:
             binary_success=bool(correct_paths),
             sc_score=sc_score,
             sc_correct_percent=sc_correct_percent,
+            sc_most_common_correct=sc_most_common_correct,
             total_paths=total_paths,
             correct_paths=correct_paths,
             incorrect_paths=incorrect_paths,
             answer_distribution=answers
         )
 
+    # New version of get_paired_examples:
     def get_paired_examples(
         self,
         analyses: List[QuestionAnalysis],
-        max_pairs: int = 10000
+        max_pairs: int = 10000,
+        top_n_correct: int = 50  # New parameter
     ) -> List[Dict[str, Any]]:
-        """Get paired positive/negative examples for each question"""
+        """Get paired examples considering multiple correct paths per question"""
         paired_examples = []
         
         for analysis in analyses:
             if not analysis.correct_paths or not analysis.incorrect_paths:
                 continue
                 
-            # Find best correct path
-            shortest_correct = min(analysis.correct_paths, key=lambda p: p.path_length)
-            best_correct = max(
-                [p for p in analysis.correct_paths 
-                 if p.path_length <= shortest_correct.path_length * 1.2],
-                key=lambda p: p.prm_score
+            # Sort correct paths by quality (shorter length + higher PRM score)
+            sorted_correct = sorted(
+                analysis.correct_paths,
+                key=lambda p: (-p.prm_score, p.path_length)
             )
             
-            # Find most deceptive incorrect path
-            best_incorrect = max(
-                analysis.incorrect_paths,
-                key=lambda p: (
-                    p.prm_score,
-                    -abs(p.path_length - best_correct.path_length)
+            # Take top N correct paths
+            top_correct_paths = sorted_correct[:top_n_correct]
+            
+            # Get shortest correct path length for reference
+            shortest_correct_len = min(p.path_length for p in analysis.correct_paths)
+            
+            # Filter correct paths that aren't too much longer than shortest
+            filtered_correct = [
+                p for p in top_correct_paths 
+                if p.path_length <= shortest_correct_len * 1.4
+            ]
+            
+            # For each correct path, find the most deceptive incorrect path
+            for correct_path in filtered_correct:
+                # Find most deceptive incorrect path relative to this correct path
+                best_incorrect = max(
+                    analysis.incorrect_paths,
+                    key=lambda p: (
+                        p.prm_score,
+                        -abs(p.path_length - correct_path.path_length)
+                    )
                 )
-            )
-            
-            paired_examples.append({
-                'question': analysis.question_text,
-                'correct_answer': analysis.correct_answer,
-                'metrics': {
-                    'sc_score': analysis.sc_score,
-                    'sc_correct_percent': analysis.sc_correct_percent,
-                    'total_paths': analysis.total_paths,
-                    'answer_distribution': dict(analysis.answer_distribution)
-                },
-                'positive': {
-                    'steps': best_correct.steps,
-                    'answer': best_correct.answer,
-                    'prm_score': best_correct.prm_score,
-                    'path_length': best_correct.path_length
-                },
-                'negative': {
-                    'steps': best_incorrect.steps,
-                    'answer': best_incorrect.answer,
-                    'prm_score': best_incorrect.prm_score,
-                    'path_length': best_incorrect.path_length
-                }
-            })
-        
+                
+                paired_examples.append({
+                    'question': analysis.question_text,
+                    'correct_answer': analysis.correct_answer,
+                    'metrics': {
+                        'sc_score': analysis.sc_score,
+                        'sc_correct_percent': analysis.sc_correct_percent,
+                        'total_paths': analysis.total_paths
+                    },
+                    'positive': {
+                        'steps': correct_path.steps,
+                        'answer': correct_path.answer,
+                        'prm_score': correct_path.prm_score,
+                        'path_length': correct_path.path_length
+                    },
+                    'negative': {
+                        'steps': best_incorrect.steps,
+                        'answer': best_incorrect.answer,
+                        'prm_score': best_incorrect.prm_score,
+                        'path_length': best_incorrect.path_length
+                    }
+                })
+
         # Sort by quality criteria including SC correct %
         paired_examples.sort(
             key=lambda x: (
@@ -282,7 +302,8 @@ class MathReasoningAnalyzer:
         return prm_examples
 
 def main():
-    analyzer = MathReasoningAnalyzer('mcts_results.jsonl')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl')
+    analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st0.bak')
     
     # Analyze all questions
     analyses = []
@@ -295,6 +316,7 @@ def main():
     binary_success = sum(1 for a in analyses if a.binary_success)
     avg_sc = np.mean([a.sc_score for a in analyses])
     avg_sc_correct = np.mean([a.sc_correct_percent for a in analyses])
+    sc_accuracy = sum(1 for a in analyses if a.sc_most_common_correct) / total * 100
     
     # Terminal path statistics
     total_paths = [a.total_paths for a in analyses]
@@ -327,6 +349,7 @@ def main():
     print("\nOverall Statistics:")
     print(f"Total questions analyzed: {total}")
     print(f"Questions with at least one correct path: {binary_success} ({binary_success/total*100:.1f}%)")
+    print(f"Accuracy using most common answer (SC): {sc_accuracy:.1f}%")
     print(f"Average self-consistency score: {avg_sc:.3f}")
     print(f"Average % of self-consistent answers that are correct: {avg_sc_correct*100:.1f}%")
     
@@ -359,13 +382,12 @@ def main():
     for threshold in sc_thresholds:
         questions_above = sum(1 for a in analyses if a.sc_score >= threshold)
         correct_above = sum(1 for a in analyses 
-                          if a.sc_score >= threshold and a.sc_correct_percent > 0)
+                          if a.sc_score >= threshold and a.sc_most_common_correct)
         print(f"Questions with SC >= {threshold:.1f}: {questions_above} "
               f"({questions_above/total*100:.1f}%) - "
               f"Correct: {correct_above} ({correct_above/questions_above*100:.1f}% of SC)")
     
-
-    should_generate=False
+    should_generate=True
     if should_generate:
         # Generate both preference pairs and PRM training data
         paired_examples = analyzer.get_paired_examples(analyses)
@@ -391,8 +413,6 @@ def main():
             print(f"Average self-consistency: {np.mean(pair_sc):.3f} (±{np.std(pair_sc):.3f})")
             print(f"Average % correct in SC: {np.mean(pair_sc_correct)*100:.1f}% (±{np.std(pair_sc_correct)*100:.1f}%)")
         
-        # In main(), replace the PRM Training Data Statistics section with:
-
         # Print PRM Training Data Statistics
         print("\nPRM Training Data Statistics:")
         correct_examples = [ex for ex in prm_training_data if ex["metadata"]["is_correct"]]
@@ -455,27 +475,11 @@ def main():
                 f"mean={np.mean(incorrect_rewards):.3f}, "
                 f"max={max(incorrect_rewards):.3f}")
         
-        # Save both datasets
-        with open('paired_examples.json', 'w') as f:
-            json.dump({
-                'summary_stats': {
-                    'total_questions': total,
-                    'questions_with_correct': binary_success,
-                    'avg_self_consistency': float(avg_sc),
-                    'avg_sc_correct_percent': float(avg_sc_correct),
-                    'path_stats': {
-                        'avg_total_paths': float(np.mean(total_paths)),
-                        'avg_correct_paths': float(np.mean(correct_paths)),
-                        'avg_incorrect_paths': float(np.mean(incorrect_paths)),
-                        'avg_correct_length': float(np.mean(all_correct_lengths)) if all_correct_lengths else None,
-                        'avg_incorrect_length': float(np.mean(all_incorrect_lengths)) if all_incorrect_lengths else None,
-                        'avg_correct_prm': float(np.mean(all_correct_scores)) if all_correct_scores else None,
-                        'avg_incorrect_prm': float(np.mean(all_incorrect_scores)) if all_incorrect_scores else None
-                    },
-                    'selected_pairs': len(paired_examples)
-                },
-                'paired_examples': paired_examples
-            }, f, indent=2)
+        # Save paired examples in JSONL format
+        with open('paired_examples.jsonl', 'w') as f:
+            for example in paired_examples:
+                json.dump(example, f)
+                f.write('\n')
         
         # Save PRM training data in JSONL format
         with open('prm_training.jsonl', 'w') as f:
@@ -484,9 +488,8 @@ def main():
                 f.write('\n')
         
         print("\nOutput files written:")
-        print("- paired_examples.json")
+        print("- paired_examples.jsonl")
         print("- prm_training.jsonl")
-
 
 if __name__ == "__main__":
     main()

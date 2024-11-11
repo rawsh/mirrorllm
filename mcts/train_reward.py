@@ -14,6 +14,8 @@ from transformers import (
     EarlyStoppingCallback,
 )
 from transformers.utils import PaddingStrategy
+from huggingface_hub import HfFolder
+import os
 import random
 from collections import Counter
 
@@ -24,15 +26,16 @@ class ScriptArguments:
     per_device_train_batch_size: Optional[int] = field(default=8)
     per_device_eval_batch_size: Optional[int] = field(default=4)
     gradient_accumulation_steps: Optional[int] = field(default=32)
-    learning_rate: Optional[float] = field(default=2e-5)
+    learning_rate: Optional[float] = field(default=1e-5)
     weight_decay: Optional[float] = field(default=0.0001)
     model_name: Optional[str] = field(default="Qwen/Qwen2.5-0.5B")
+    model_revision: Optional[str] = field(default=None)
     bf16: Optional[bool] = field(default=True)
     num_train_epochs: Optional[int] = field(default=2)
     train_set_path: Optional[str] = field(default="rawsh/magpie-ultra-v0.1-PRM-data-base")
     eval_set_path: Optional[str] = field(default="rawsh/magpie-ultra-v0.1-PRM-data-base")
     output_path: Optional[str] = field(default="./mirrorqwen2.5-0.5b-prm-base")
-    output_model_name: Optional[str] = field(default="rawsh/mirrorqwen2.5-0.5b-PRM")
+    output_model_name: Optional[str] = field(default="rawsh/mirrorqwen2.5-0.5b-prm")
     gradient_checkpointing: Optional[bool] = field(default=True)
     optim: Optional[str] = field(default="adamw_torch_fused")
     lr_scheduler_type: Optional[str] = field(default="cosine")
@@ -42,12 +45,17 @@ class ScriptArguments:
     early_stopping_patience: Optional[int] = field(default=3)
     early_stopping_threshold: Optional[float] = field(default=0.001)
     disable_binning: Optional[bool] = field(default=False)
-    # Add new parameters for improved checkpointing
     warmup_steps: Optional[int] = field(default=100)
     save_total_limit: Optional[int] = field(default=3)
     min_loss_threshold: Optional[float] = field(default=0.1)
-
-
+    hub_token: Optional[str] = field(
+        default=None,
+        metadata={"help": "HuggingFace Hub token. If not provided, will try to use the cached token."}
+    )
+    push_to_hub: Optional[bool] = field(
+        default=True,
+        metadata={"help": "Whether to push the model to the HuggingFace Hub"}
+    )
 
 def build_dataset(tokenizer, train_path, eval_path, disable_binning: bool):
     def tokenize(sample):
@@ -163,7 +171,7 @@ def build_dataset(tokenizer, train_path, eval_path, disable_binning: bool):
 
 @dataclass
 class RewardDataCollatorWithPadding:
-    tokenizer: AutoTokenizer
+    tokenizer: PreTrainedTokenizerBase
     padding: Union[bool, str, PaddingStrategy] = True
     max_length: Optional[int] = None
     pad_to_multiple_of: Optional[int] = None
@@ -190,6 +198,13 @@ class RewardDataCollatorWithPadding:
         return batch
 
 def compute_metrics(eval_pred):
+    """
+    Compute metrics for the model evaluation.
+    Args:
+        eval_pred: tuple of predictions and labels
+    Returns:
+        dict: Dictionary containing metrics
+    """
     predictions = eval_pred.predictions.squeeze()
     labels = eval_pred.label_ids
     mse = np.mean((predictions - labels) ** 2)
@@ -215,43 +230,101 @@ class RewardTrainer(Trainer):
             return loss, {"rewards": rewards}
         return loss
 
+    def _push_to_hub(self, commit_message: Optional[str] = "End of training", **kwargs) -> str:
+        """Override to force push to hub by using the low-level API"""
+        if not self.args.push_to_hub:
+            return
+
+        if not self.args.hub_token and not HfFolder.get_token():
+            raise ValueError(
+                "No token provided and no token found in cache. "
+                "Please provide a token via hub_token parameter or log in using `huggingface-cli login`"
+            )
+
+        # Set token if provided
+        token = self.args.hub_token or HfFolder.get_token()
+        if token:
+            os.environ["HF_TOKEN"] = token
+            HfFolder.save_token(token)
+
+        try:
+            from huggingface_hub import HfApi, create_repo
+            api = HfApi()
+            
+            # Create or ensure repo exists
+            repo_id = self.args.hub_model_id
+            try:
+                create_repo(repo_id, token=token, exist_ok=True, private=True)
+                print(f"Repository {repo_id} is ready")
+            except Exception as e:
+                print(f"Note: {str(e)}")
+
+            # Save model and tokenizer locally first
+            local_path = os.path.join(self.args.output_dir, "for_hub_push")
+            os.makedirs(local_path, exist_ok=True)
+            self.save_model(local_path)
+            
+            # Use upload_folder with low-level API
+            api.upload_folder(
+                folder_path=local_path,
+                repo_id=repo_id,
+                token=token,
+                repo_type="model",
+                commit_message=commit_message,
+                revision="main",
+                create_pr=False,
+            )
+            print(f"Successfully uploaded folder to {repo_id}")
+            
+            return repo_id
+            
+        except Exception as e:
+            print(f"Error in push_to_hub: {str(e)}")
+            raise e
 
 def train_reward_model(
     model_name=None,
+    model_revision=None,
     dataset_path=None,
     output_model_name=None,
-    disable_binning=False
+    disable_binning=False,
+    hub_token=None,
+    push_to_hub=True
 ):
     script_args = ScriptArguments(
         disable_binning=disable_binning,
-        warmup_steps=100,  # Customize warmup period
-        save_total_limit=3,  # Keep only last 3 checkpoints
-        min_loss_threshold=0.1  # Minimum loss threshold for saving
+        warmup_steps=100,
+        save_total_limit=3,
+        min_loss_threshold=0.1,
+        hub_token=hub_token,
+        push_to_hub=push_to_hub
     )
 
     if model_name:
         script_args.model_name = model_name
+    if model_revision:
+        script_args.model_revision = model_revision
     if output_model_name:
         script_args.output_model_name = output_model_name
     if dataset_path:
         script_args.train_set_path = dataset_path
         script_args.eval_set_path = dataset_path
 
-    # Initialize tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(script_args.model_name, use_auth_token=True)
-    tokenizer.truncation_side = "left"
-    tokenizer.model_max_length = script_args.max_length
-    tokenizer.pad_token = tokenizer.eos_token
+    # Initialize tokenizer with better error handling
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            script_args.model_name,
+            use_auth_token=True if script_args.hub_token else None,
+            revision=script_args.model_revision
+        )
+        tokenizer.truncation_side = "left"
+        tokenizer.model_max_length = script_args.max_length
+        tokenizer.pad_token = tokenizer.eos_token
 
-    # Build datasets
-    train_dataset, eval_dataset = build_dataset(
-        tokenizer, 
-        script_args.train_set_path, 
-        script_args.eval_set_path, 
-        script_args.disable_binning
-    )
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize tokenizer: {str(e)}")
 
-    # Enhanced training arguments
+    # Enhanced training arguments with Hub settings
     training_args = TrainingArguments(
         output_dir=script_args.output_path,
         learning_rate=script_args.learning_rate,
@@ -273,30 +346,45 @@ def train_reward_model(
         warmup_ratio=0.05,
         report_to='wandb',
         torch_compile=True,
-        # Enhanced checkpointing settings
         load_best_model_at_end=True,
-        metric_for_best_model="mse_moving_avg",  # Use moving average instead of raw MSE
+        metric_for_best_model="mse_moving_avg",
         greater_is_better=False,
         save_strategy="steps",
-        save_steps=max(100, script_args.eval_every_steps),  # Minimum 100 steps
+        save_steps=max(100, script_args.eval_every_steps),
         evaluation_strategy="steps",
         eval_steps=max(100, script_args.eval_every_steps),
         save_total_limit=script_args.save_total_limit,
-        # Gradient clipping
         max_grad_norm=1.0,
+        # Hub-specific settings
+        push_to_hub=script_args.push_to_hub,
+        hub_model_id=script_args.output_model_name if script_args.push_to_hub else None,
+        hub_token=script_args.hub_token,
     )
 
-    # Initialize model
-    model = AutoModelForSequenceClassification.from_pretrained(
-        script_args.model_name,
-        num_labels=1,
-        torch_dtype=torch.bfloat16,
-        use_flash_attention_2=True,
-    )
-    model.config.pad_token_id = model.config.eos_token_id
-    model.config.use_cache = not script_args.gradient_checkpointing
+    # Initialize model with better error handling
+    try:
+        model = AutoModelForSequenceClassification.from_pretrained(
+            script_args.model_name,
+            num_labels=1,
+            torch_dtype=torch.bfloat16,
+            use_flash_attention_2=True,
+            use_auth_token=True if script_args.hub_token else None,
+            revision=script_args.model_revision
+        )
+        model.config.pad_token_id = model.config.eos_token_id
+        model.config.use_cache = not script_args.gradient_checkpointing
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize model: {str(e)}")
 
-    # Initialize trainer with improved callbacks
+    # Build datasets
+    train_dataset, eval_dataset = build_dataset(
+        tokenizer, 
+        script_args.train_set_path, 
+        script_args.eval_set_path, 
+        script_args.disable_binning
+    )
+
+    # Initialize trainer
     trainer = RewardTrainer(
         model=model,
         args=training_args,
@@ -315,18 +403,38 @@ def train_reward_model(
         ],
     )
 
-
     # Train and save
     trainer.train()
     
     print("Saving final checkpoint")
-    trainer.save_model(script_args.output_path + "/final_checkpoint")
-    tokenizer.save_pretrained(script_args.output_path + "/final_checkpoint")
+    trainer.save_model(script_args.output_path)
+    tokenizer.save_pretrained(script_args.output_path)
     
-    # Push to Hub if specified
-    if script_args.output_model_name:
-        tokenizer.push_to_hub(script_args.output_model_name)
-        trainer.push_to_hub(script_args.output_model_name)
+    # Push to Hub with force push handling
+    if script_args.push_to_hub and script_args.output_model_name:
+        try:
+            print(f"Pushing model to hub: {script_args.output_model_name}")
+            # First try to push the tokenizer separately with force
+            try:
+                tokenizer.push_to_hub(
+                    script_args.output_model_name,
+                    use_auth_token=script_args.hub_token,
+                    force=True
+                )
+                print("Successfully pushed tokenizer to hub!")
+            except Exception as e:
+                print(f"Warning: Failed to push tokenizer: {str(e)}")
+
+            # Then push the model with force
+            trainer.push_to_hub(
+                commit_message="Final trained model",
+                blocking=True,  # Wait for push to complete
+                force=True  # Force the push
+            )
+            print("Successfully pushed model to hub!")
+        except Exception as e:
+            print(f"Error pushing to hub: {str(e)}")
+            print("Saving model locally anyway...")
 
 if __name__ == "__main__":
     train_reward_model()

@@ -34,8 +34,8 @@ vol = modal.Volume.from_name("prm-tmp", create_if_missing=True)
 
 @app.function(
     cpu=2.0,
-    gpu=modal.gpu.A10G(),
-    # gpu=modal.gpu.H100(),
+    # gpu=modal.gpu.A10G(),
+    gpu=modal.gpu.H100(),
     # gpu=modal.gpu.A100(count=4, size="40GB"),
     # gpu=modal.gpu.A100(size="40GB"),
     timeout=20 * HOURS,
@@ -46,7 +46,13 @@ vol = modal.Volume.from_name("prm-tmp", create_if_missing=True)
     volumes={"/out": vol},
 )
 def train_reward_model_upload_to_hf():
-    train_reward_model()
+    train_reward_model(
+        # add revision
+        model_name="Qwen/Qwen2.5-0.5B",
+        dataset_path="rawsh/magpie-ultra-v0.1-PRM-data-base",
+        output_model_name="rawsh/mirrorqwen2.5-0.5b-prm",
+        disable_binning=False
+    )
 
 @app.local_entrypoint()
 def main():

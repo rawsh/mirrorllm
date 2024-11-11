@@ -13,16 +13,18 @@ from tqdm import tqdm
 from tqdm.asyncio import tqdm as atqdm
 
 # URLs and configuration
-POLICY_URL = 'https://rawsh--vllm-qwen-ft-serve.modal.run/v1/'
+# POLICY_URL = 'https://rawsh--vllm-qwen-ft-serve.modal.run/v1/'
+POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-1'
+POLICY_URL = 'https://rawsh--vllm-qwen-simpo-serve.modal.run/v1/'
 PRM_URL = 'https://rawsh--mirrorqwen-prm-embedder-score-output.modal.run'
 API_KEY = '9FF74944EED19865193F979942FB1'
 
-CONCURRENT_MCTS_SEMAPHORE = Semaphore(20)
+CONCURRENT_MCTS_SEMAPHORE = Semaphore(50)
 POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
-MAX_RETRIES = 20  # Increased from 10
-TIMEOUT = 15    # Decreased from 30 to fail faster and retry
+MAX_RETRIES = 20  # Increased from 10s
+TIMEOUT = 20    # Decreased from 30 to fail faster and retry
 
 # Cache decorator and retry function
 def async_lru_cache(maxsize=2000):
@@ -42,7 +44,7 @@ def async_lru_cache(maxsize=2000):
 async def retry_with_timeout(func, *args, **kwargs):
     for attempt in range(MAX_RETRIES):
         try:
-            return await asyncio.wait_for(func(*args, **kwargs), timeout=TIMEOUT)
+            return await asyncio.wait_for(func(*args, **kwargs), timeout=TIMEOUT * max(1, attempt / 10 ))
         except TimeoutError:
             if attempt == MAX_RETRIES - 1:
                 raise
@@ -175,7 +177,7 @@ async def get_next_action(state, client):
     prompt = format_state_for_policy(state)
     async with POLICY_SEMAPHORE:
         response = await client.completions.create(
-            model="rawsh/mirrorqwen2.5-0.5b-SFT",
+            model=POLICY_MODEL_NAME,
             prompt=prompt,
             max_tokens=250,
             stop=["\n\n"],
@@ -196,7 +198,7 @@ async def is_terminal(state, correct_answer, client, session):
     
     async with POLICY_SEMAPHORE:
         response = await client.completions.create(
-            model="rawsh/mirrorqwen2.5-0.5b-SFT",
+            model=POLICY_MODEL_NAME,
             prompt=state,
             max_tokens=1,
             stop=["\n\n"],
@@ -278,6 +280,7 @@ async def mcts(root_state, correct_answer, num_iterations, session, progress_tra
     
     return root, terminal_nodes
 
+
 async def run_mcts(initial_state, correct_answer, num_iterations, session, progress_tracker):
     async with CONCURRENT_MCTS_SEMAPHORE:
         start_time = time.time()
@@ -287,19 +290,27 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
         best_leaf = await find_best_leaf_by_prm(root, session)
         
         terminal_paths = []
-        terminal_correct_count = 0
-        total_terminal_nodes = len(terminal_nodes)
+        answers = {}  # Track answer frequencies
         max_prm_score = float('-inf')
         best_prm_path_correct = False
+        terminal_correct_count = 0  # Add this counter
         
         for node in terminal_nodes:
             score = await retry_with_timeout(evaluate_state, node, session)
             is_node_correct = is_correct(node, correct_answer)
             if is_node_correct:
-                terminal_correct_count += 1
+                terminal_correct_count += 1  # Increment counter
+            
+            # Extract answer from the node
+            last_step = node.split("\n\n")[-1]
+            if r"\boxed{" in last_step:
+                answer = last_step.split(r"\boxed{")[1].split("}")[0]
+                answers[answer] = answers.get(answer, 0) + 1
+            
             if score > max_prm_score:
                 max_prm_score = score
                 best_prm_path_correct = is_node_correct
+                
             terminal_paths.append({
                 "final_state": node,
                 "score": score,
@@ -308,14 +319,16 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
         
         is_best_correct = is_correct(best_leaf.state, correct_answer)
         
-        # Calculate metrics using only terminal nodes
-        # Self-consistency based on majority voting of terminal nodes (>50% correct)
-        has_terminal_nodes = total_terminal_nodes > 0
-        is_sc_correct = (terminal_correct_count > total_terminal_nodes / 2) if has_terminal_nodes else False
-        is_any_correct = (terminal_correct_count > 0)  # Any-correct using terminal nodes
+        # Calculate SC using most common answer
+        has_terminal_nodes = len(terminal_nodes) > 0
+        is_sc_correct = False
+        if has_terminal_nodes and answers:
+            most_common_answer = max(answers.items(), key=lambda x: x[1])[0]
+            is_sc_correct = any(p["correct"] and most_common_answer == p["final_state"].split(r"\boxed{")[1].split("}")[0] 
+                              for p in terminal_paths)
         
-        # Check if this question completed all iterations
-        is_fully_completed = total_terminal_nodes > 0 and num_iterations == progress_tracker.iterations_per_question
+        is_any_correct = any(p["correct"] for p in terminal_paths)
+        is_fully_completed = len(terminal_nodes) > 0 and num_iterations == progress_tracker.iterations_per_question
         
         result = {
             "question": initial_state,
@@ -323,7 +336,7 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
             "statistics": {
                 "num_iterations": num_iterations,
                 "execution_time": end_time - start_time,
-                "total_terminal_nodes": total_terminal_nodes,
+                "total_terminal_nodes": len(terminal_nodes),  # Use len() directly
                 "correct_terminal_nodes": terminal_correct_count,
                 "self_consistency_correct": is_sc_correct,
                 "any_correct": is_any_correct,
@@ -344,29 +357,57 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
 
 async def main():
     # Set random seed for reproducibility
-    random.seed(42)
+    # random.seed(42) # st 0
+    # random.seed(4242) # st 1
+    random.seed(424242) # st 2
     
     def process(example):
         example["answer"] = example["answer"].split("\n#### ")[-1].strip()
         return example
 
-    gsm8k = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=42)
+    # gsm8k = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=42)
+    gsm8k = load_dataset("openai/gsm8k", "main", split="train").shuffle(seed=42)
     gsm8k = gsm8k.map(process, num_proc=24)
     initial_states = [(example["question"], example["answer"]) for example in gsm8k]
-    
-    num_iterations = 10
+    # initial_states = random.sample(initial_states, 200)
 
-    # Initialize progress tracker
-    progress_tracker = MCTSProgress(len(initial_states), num_iterations)
+    # SAMPLE 200 QUESTIONS - SELF TRAINING
+    initial_states = random.sample(initial_states, 200)
+    num_iterations = 100
+
+    print("cold starting policy vllm + prm api")
+
+    # warm up the chat API
+    client = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
+    completion = await client.completions.create(
+        model=POLICY_MODEL_NAME,
+        prompt="TEST",
+        max_tokens=1,
+        stop=["\n\n"],
+        temperature=0.3,
+        logprobs=20,
+    )
+    assert(len(completion.choices) == 1)
+    print("warmed up vllm")
 
     async with aiohttp.ClientSession() as session:
+        # warm up PRM api
+        async with session.post(PRM_URL, json={"prompt": "TEST"}) as response:
+            result = await response.json()
+        
+        assert('score' in result)
+        print("warmed up PRM api")
+
+        # Initialize progress tracker
+        progress_tracker = MCTSProgress(len(initial_states), num_iterations)
+
         tasks = []
         for state, answer in initial_states:
             tasks.append(run_mcts(state, answer, num_iterations, session, progress_tracker))
         
         results = await asyncio.gather(*tasks)
     
-    progress_tracker.close()
+        progress_tracker.close()
     
     # Calculate and print final statistics
     total_questions = len(results)

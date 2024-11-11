@@ -47,9 +47,12 @@ vol = modal.Volume.from_name("prm-tmp", create_if_missing=True)
 )
 def train_reward_model_upload_to_hf():
     train_reward_model(
+        # add revision
         model_name="rawsh/mirrorqwen2.5-0.5b-prm",
-        dataset_path="rawsh/magpie-ultra-v0.1-PRM-data-ST-0",
-        output_model_name="rawsh/mirrorqwen2.5-0.5b-PRM-ST-0",
+        # model_revision="aed1bcf7d3d984272e329c3843f9c5fd0dfe5ca5", # base
+        model_revision="42e07d1b708282ac2aae338050d8116f8c69398d", # st0
+        dataset_path="rawsh/mirrorqwen2.5-0.5B-gsm8k-PRM-data-ST-1",
+        output_model_name="rawsh/mirrorqwen2.5-0.5b-prm",
         disable_binning=True
     )
 

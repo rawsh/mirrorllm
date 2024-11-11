@@ -1,4 +1,6 @@
 import modal
+import asyncio
+from contextlib import asynccontextmanager
 
 def download_model_to_image(model_dir, model_name, model_revision):
     import os
@@ -6,7 +8,6 @@ def download_model_to_image(model_dir, model_name, model_revision):
     from transformers.utils import move_cache
 
     os.makedirs(model_dir, exist_ok=True)
-
     snapshot_download(
         model_name,
         revision=model_revision,
@@ -16,27 +17,19 @@ def download_model_to_image(model_dir, model_name, model_revision):
     move_cache()
 
 MODEL_DIR = "/qwen"
-MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SFT"
-MODEL_REVISION = "1f75c1204888cc912ad0b186c5b7620235246ffa"
-
-# MODEL_DIR = "/smollm"
-# MODEL_NAME = "HuggingFaceTB/SmolLM2-135M-Instruct"
-# MODEL_REVISION = "7e27bd9f95328f0f3b08261d1252705110c806f8"
-
-# MODEL_DIR = "/qwen"
-# MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-# MODEL_REVISION = "a8b602d9dafd3a75d382e62757d83d89fca3be54"
-
-# MODEL_DIR = "/gemma"
-# MODEL_NAME = "rawsh/mirrorgemma-2-2b-SFT"
-# MODEL_REVISION = "0ec8c2eaead95160a9f908cd59f254bdace496bd"
+# # st0
+# MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-0"
+# MODEL_REVISION = "c699a3f7e82a805d6a4b158b033c5d7919230dd1"
+# st1
+MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-1"
+MODEL_REVISION = "4ba061377ace8d0fb15802aaf943b4184420ea7d"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
     .pip_install(
-        "vllm==0.6.1.post2",
+        "vllm==0.6.2",
         "torch==2.4.0",
-        "transformers==4.44.2",
+        "transformers>=4.45",
         "ray==2.36.0",
         "hf-transfer==0.1.8",
         "huggingface_hub==0.25.0",
@@ -55,30 +48,42 @@ vllm_image = (
     .env({"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"})
 )
 
+app = modal.App("vllm-qwen-simpo")
 
-# app = modal.App("vllm-smollm")
-app = modal.App("vllm-qwen-ft")
-
-N_GPU = 1  # tip: for best results, first upgrade to more powerful GPUs, and only then increase GPU count
-
-MINUTES = 60  # seconds
+N_GPU = 1
+MINUTES = 60
 HOURS = 60 * MINUTES
 
-# key: 9FF74944EED19865193F979942FB1
+async def get_model_config(engine):
+    try:
+        return await engine.get_model_config()
+    except Exception as e:
+        print(f"Error getting model config: {e}")
+        raise
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup
+    try:
+        await asyncio.sleep(0)  # Give chance for event loop to start
+        yield
+    finally:
+        # Shutdown: Cancel all pending tasks
+        tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 @app.function(
     image=vllm_image,
-    # gpu=modal.gpu.H100(count=N_GPU),
-    # gpu=modal.gpu.A100(count=N_GPU, size="80GB"),
     gpu=modal.gpu.A10G(count=N_GPU),
+    # gpu=modal.gpu.T4(),
+    # gpu=modal.gpu.A100(),
     container_idle_timeout=2 * MINUTES,
     timeout=20 * MINUTES,
+    # allow_concurrent_inputs=1000,
     allow_concurrent_inputs=1000,
-    secrets=[
-        modal.Secret.from_name("vllm-token"),
-        # modal.Secret.from_name("hf-token"),
-    ]
-    # volumes={MODELS_DIR: volume},
+    secrets=[modal.Secret.from_name("vllm-token")]
 )
 @modal.asgi_app()
 def serve():
@@ -89,40 +94,18 @@ def serve():
     from vllm.engine.async_llm_engine import AsyncLLMEngine
     from vllm.entrypoints.logger import RequestLogger
     from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-    from vllm.entrypoints.openai.serving_completion import (
-        OpenAIServingCompletion,
-    )
+    from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
+    from vllm.entrypoints.openai.serving_engine import BaseModelPath
     from vllm.usage.usage_lib import UsageContext
 
-    def get_model_config(engine):
-        import asyncio
-
-        try:  # adapted from vLLM source -- https://github.com/vllm-project/vllm/blob/507ef787d85dec24490069ffceacbd6b161f4f72/vllm/entrypoints/openai/api_server.py#L235C1-L247C1
-            event_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            event_loop = None
-
-        if event_loop is not None and event_loop.is_running():
-            # If the current is instanced by Ray Serve,
-            # there is already a running event loop
-            model_config = event_loop.run_until_complete(engine.get_model_config())
-        else:
-            # When using single vLLM without engine_use_ray
-            model_config = asyncio.run(engine.get_model_config())
-
-        return model_config
-
-    # volume.reload()  # ensure we have the latest version of the weights
-
-    # create a fastAPI app that uses vLLM's OpenAI-compatible router
     web_app = fastapi.FastAPI(
         title=f"OpenAI-compatible {MODEL_NAME} server",
         description="Run an OpenAI-compatible LLM server with vLLM on modal.com",
         version="0.0.1",
         docs_url="/docs",
+        lifespan=lifespan
     )
 
-    # security: CORS middleware for external requests
     http_bearer = fastapi.security.HTTPBearer(
         scheme_name="Bearer Token",
         description="See code for authentication details.",
@@ -135,7 +118,6 @@ def serve():
         allow_headers=["*"],
     )
 
-    # security: inject dependency on authed routes
     TOKEN = os.environ["API_TOKEN"]
     async def is_authenticated(api_key: str = fastapi.Security(http_bearer)):
         if api_key.credentials != TOKEN:
@@ -146,20 +128,18 @@ def serve():
         return {"username": "authenticated_user"}
 
     router = fastapi.APIRouter(dependencies=[fastapi.Depends(is_authenticated)])
-
+    
     # wrap vllm's router in auth router
     router.include_router(api_server.router)
     # add authed vllm to our fastAPI app
     web_app.include_router(router)
 
     engine_args = AsyncEngineArgs(
-        # model=MODELS_DIR + "/" + MODEL_NAME,
         model=MODEL_DIR,
         tensor_parallel_size=N_GPU,
         gpu_memory_utilization=0.90,
         max_model_len=8096,
-        # enforce_eager=True, 
-        enforce_eager=False,  # capture the graph for faster inference, but slower cold starts (30s > 20s)
+        enforce_eager=False,
         enable_prefix_caching=True
     )
 
@@ -167,28 +147,25 @@ def serve():
         engine_args, usage_context=UsageContext.OPENAI_API_SERVER
     )
 
-    model_config = get_model_config(engine)
+    async def setup_engine():
+        model_config = await get_model_config(engine)
+        return model_config
 
+    # Use asyncio.run to properly handle the async setup
+    model_config = asyncio.run(setup_engine())
     request_logger = RequestLogger(max_log_len=2048)
 
-    api_server.openai_serving_chat = OpenAIServingChat(
+    base_model_paths = [
+        BaseModelPath(name=MODEL_NAME.split("/")[1], model_path=MODEL_NAME)
+    ]
+    
+    api_server.completion = lambda s: OpenAIServingCompletion(
         engine,
         model_config=model_config,
-        served_model_names=[MODEL_NAME],
-        chat_template=None,
-        response_role="assistant",
-        lora_modules=[],
-        prompt_adapters=[],
-        request_logger=request_logger,
-    )
-    api_server.openai_serving_completion = OpenAIServingCompletion(
-        engine,
-        model_config=model_config,
-        served_model_names=[MODEL_NAME],
+        base_model_paths=base_model_paths,
         lora_modules=[],
         prompt_adapters=[],
         request_logger=request_logger,
     )
 
     return web_app
-

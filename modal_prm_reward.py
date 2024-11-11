@@ -25,15 +25,18 @@ with image.imports():
             self.batched = batched
 
         def create_batch_processor(self, pipeline_func):
-            @self.batched.dynamically(batch_size=256, timeout_ms=100.0, small_batch_threshold=4)
+            @self.batched.dynamically(batch_size=256, timeout_ms=200.0, small_batch_threshold=4)
             def _process_batch(prompts: List[str]) -> List[Dict]:
                 return pipeline_func(prompts)
             return _process_batch
 
 @app.cls(
+    # gpu=modal.gpu.T4(),
     gpu=modal.gpu.A10G(),
     # gpu=modal.gpu.H100(),
+    # gpu=modal.gpu.A100(),
     container_idle_timeout=120,
+    # allow_concurrent_inputs=1000,
     allow_concurrent_inputs=1000,
     secrets=[
         modal.Secret.from_name("hf-token"),
@@ -41,8 +44,9 @@ with image.imports():
 )
 class Embedder:
     model_id = "rawsh/mirrorqwen2.5-0.5b-prm"
-    # revision = "a1cd3547343bab37ff61fd248ef46b779d5a8dfa" # base
-    revision = "3ad692bde328cddbfd45666cb6f7307430cac181"
+    # revision = "894341fbd81d0c1abdd98b4e0630de932aa63c6f" # base
+    # revision = "42e07d1b708282ac2aae338050d8116f8c69398d" # st0
+    revision = "65f4a7601dffacc40e0ef7fa4733d346c926bd18" # st1
     device = "cuda"
     print(model_id)
 
