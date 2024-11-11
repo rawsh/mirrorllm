@@ -50,8 +50,10 @@ def train_reward_model_upload_to_hf():
         # add revision
         model_name="rawsh/mirrorqwen2.5-0.5b-prm",
         # model_revision="aed1bcf7d3d984272e329c3843f9c5fd0dfe5ca5", # base
-        model_revision="42e07d1b708282ac2aae338050d8116f8c69398d", # st0
-        dataset_path="rawsh/mirrorqwen2.5-0.5B-gsm8k-PRM-data-ST-1",
+        # model_revision="42e07d1b708282ac2aae338050d8116f8c69398d", # st0
+        # model_revision="80da7ccc4f107e0cb6bf937d61be4702badfb96b", # st1
+        model_revision="4d618515c90069993f4b32e4201783efdeebbc22", # st2
+        dataset_path="rawsh/mirrorqwen2.5-0.5B-gsm8k-PRM-data-ST-2",
         output_model_name="rawsh/mirrorqwen2.5-0.5b-prm",
         disable_binning=True
     )

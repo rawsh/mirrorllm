@@ -54,9 +54,11 @@ def train_policy_simpo():
         # Run training with specified parameters
         train_simpo(
             # model_name="rawsh/mirrorqwen2.5-0.5b-SFT",
-            model_name="rawsh/mirrorqwen2.5-0.5b-SimPO-0",
-            dataset_name="rawsh/mirrorqwen2.5-0.5B-gsm8k-policy-data-ST-1",
-            output_model_name="rawsh/mirrorqwen2.5-0.5b-SimPO-1",
+            # model_name="rawsh/mirrorqwen2.5-0.5b-SimPO-0",
+            # model_name="rawsh/mirrorqwen2.5-0.5b-SimPO-1",
+            model_name="rawsh/mirrorqwen2.5-0.5b-SimPO-2",
+            dataset_name="rawsh/mirrorqwen2.5-0.5B-gsm8k-policy-data-ST-3",
+            output_model_name="rawsh/mirrorqwen2.5-0.5b-SimPO-3",
             hub_token=hf_token
         )
     except Exception as e:

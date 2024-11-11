@@ -14,7 +14,7 @@ from tqdm.asyncio import tqdm as atqdm
 
 # URLs and configuration
 # POLICY_URL = 'https://rawsh--vllm-qwen-ft-serve.modal.run/v1/'
-POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-1'
+POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-2'
 POLICY_URL = 'https://rawsh--vllm-qwen-simpo-serve.modal.run/v1/'
 PRM_URL = 'https://rawsh--mirrorqwen-prm-embedder-score-output.modal.run'
 API_KEY = '9FF74944EED19865193F979942FB1'
@@ -357,9 +357,11 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
 
 async def main():
     # Set random seed for reproducibility
+    # random.seed(0) # eval set - all models
     # random.seed(42) # st 0
     # random.seed(4242) # st 1
-    random.seed(424242) # st 2
+    # random.seed(424242) # st 2
+    random.seed(42424242) # st 3
     
     def process(example):
         example["answer"] = example["answer"].split("\n#### ")[-1].strip()
@@ -379,7 +381,7 @@ async def main():
 
     # warm up the chat API
     client = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
-    completion = await client.completions.create(
+    completion_promise = client.completions.create(
         model=POLICY_MODEL_NAME,
         prompt="TEST",
         max_tokens=1,
@@ -387,16 +389,19 @@ async def main():
         temperature=0.3,
         logprobs=20,
     )
-    assert(len(completion.choices) == 1)
-    print("warmed up vllm")
 
     async with aiohttp.ClientSession() as session:
         # warm up PRM api
         async with session.post(PRM_URL, json={"prompt": "TEST"}) as response:
-            result = await response.json()
-        
-        assert('score' in result)
-        print("warmed up PRM api")
+            prm_promise = response.json()
+            prm_score = await prm_promise
+            assert('score' in prm_score)
+            print("warmed up PRM api")
+
+        completion = await completion_promise
+        assert(len(completion.choices) == 1)
+        print("warmed up vllm")
+    
 
         # Initialize progress tracker
         progress_tracker = MCTSProgress(len(initial_states), num_iterations)

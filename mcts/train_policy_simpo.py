@@ -19,7 +19,7 @@ class ScriptArguments:
     # learning_rate: float = field(default=3e-7)
     learning_rate: float = field(default=5e-7)
     batch_size: int = field(default=8)
-    num_train_epochs: int = field(default=7)
+    num_train_epochs: int = field(default=10)
     # max_steps: int = field(default=-1)
     # max_steps: int = field(default=10)
     gradient_accumulation_steps: int = field(default=8)

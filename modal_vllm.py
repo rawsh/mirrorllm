@@ -21,8 +21,13 @@ MODEL_DIR = "/qwen"
 # MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-0"
 # MODEL_REVISION = "c699a3f7e82a805d6a4b158b033c5d7919230dd1"
 # st1
-MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-1"
-MODEL_REVISION = "4ba061377ace8d0fb15802aaf943b4184420ea7d"
+# MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-1"
+# MODEL_REVISION = "4ba061377ace8d0fb15802aaf943b4184420ea7d"
+# st1 v2
+# MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-1"
+# MODEL_REVISION = "9e6d25903688b5678bdbe333c537a58488212024"
+MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-2"
+MODEL_REVISION = "a41b6dd0307cf080a83cf20efc25bbf025b47852"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")

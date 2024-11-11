@@ -46,7 +46,9 @@ class Embedder:
     model_id = "rawsh/mirrorqwen2.5-0.5b-prm"
     # revision = "894341fbd81d0c1abdd98b4e0630de932aa63c6f" # base
     # revision = "42e07d1b708282ac2aae338050d8116f8c69398d" # st0
-    revision = "65f4a7601dffacc40e0ef7fa4733d346c926bd18" # st1
+    # revision = "65f4a7601dffacc40e0ef7fa4733d346c926bd18" # st1 v1
+    # revision = "80da7ccc4f107e0cb6bf937d61be4702badfb96b" # st1 v2
+    revision = "4d618515c90069993f4b32e4201783efdeebbc22" # st2
     device = "cuda"
     print(model_id)
 

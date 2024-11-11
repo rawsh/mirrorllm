@@ -293,7 +293,7 @@ def train_reward_model(
 ):
     script_args = ScriptArguments(
         disable_binning=disable_binning,
-        warmup_steps=100,
+        warmup_steps=10,
         save_total_limit=3,
         min_loss_threshold=0.1,
         hub_token=hub_token,
@@ -350,9 +350,9 @@ def train_reward_model(
         metric_for_best_model="mse_moving_avg",
         greater_is_better=False,
         save_strategy="steps",
-        save_steps=max(100, script_args.eval_every_steps),
+        save_steps=max(5, script_args.eval_every_steps),
         evaluation_strategy="steps",
-        eval_steps=max(100, script_args.eval_every_steps),
+        eval_steps=max(5, script_args.eval_every_steps),
         save_total_limit=script_args.save_total_limit,
         max_grad_norm=1.0,
         # Hub-specific settings

@@ -303,7 +303,11 @@ class MathReasoningAnalyzer:
 
 def main():
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl')
-    analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st0.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st0.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st1.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st2-v1.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st2-v2.bak')
+    analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st3.bak')
     
     # Analyze all questions
     analyses = []
