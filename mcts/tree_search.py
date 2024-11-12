@@ -14,9 +14,15 @@ from tqdm.asyncio import tqdm as atqdm
 
 # URLs and configuration
 # POLICY_URL = 'https://rawsh--vllm-qwen-ft-serve.modal.run/v1/'
-POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-3'
-POLICY_URL = 'https://rawsh--vllm-qwen-simpo-serve.modal.run/v1/'
-PRM_URL = 'https://rawsh--mirrorqwen-prm-embedder-score-output.modal.run'
+# POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-3'
+# POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SimPO-0'
+# POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-SFT'
+POLICY_MODEL_NAME = 'mirrorqwen2.5-0.5b-ORPO-1'
+# POLICY_URL = 'https://rawsh--vllm-qwen-simpo-serve.modal.run/v1/'
+# POLICY_URL = 'https://rawsh--vllm-qwen-base-serve.modal.run/v1/'
+POLICY_URL = 'https://rawsh--vllm-qwen-orpo-serve.modal.run/v1/'
+# PRM_URL = 'https://rawsh--mirrorqwen-prm-embedder-score-output.modal.run'
+PRM_URL = 'https://rawsh--mirrorqwen-prm-st-embedder-score-output.modal.run'
 API_KEY = '9FF74944EED19865193F979942FB1'
 
 CONCURRENT_MCTS_SEMAPHORE = Semaphore(50)
@@ -24,7 +30,7 @@ POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
 MAX_RETRIES = 20  # Increased from 10s
-TIMEOUT = 20    # Decreased from 30 to fail faster and retry
+TIMEOUT = 20   # Decreased from 30 to fail faster and retry
 
 # Cache decorator and retry function
 def async_lru_cache(maxsize=2000):
@@ -359,9 +365,9 @@ async def main():
     # Set random seed for reproducibility
     # random.seed(0) # eval set - all models
     # random.seed(42) # st 0
-    # random.seed(4242) # st 1
+    random.seed(4242) # st 1
     # random.seed(424242) # st 2
-    random.seed(42424242) # st 3
+    # random.seed(42424242) # st 3
     
     def process(example):
         example["answer"] = example["answer"].split("\n#### ")[-1].strip()
@@ -371,10 +377,10 @@ async def main():
     gsm8k = load_dataset("openai/gsm8k", "main", split="train").shuffle(seed=42)
     gsm8k = gsm8k.map(process, num_proc=24)
     initial_states = [(example["question"], example["answer"]) for example in gsm8k]
-    # initial_states = random.sample(initial_states, 200)
 
     # SAMPLE 200 QUESTIONS - SELF TRAINING
     initial_states = random.sample(initial_states, 200)
+    # initial_states = random.sample(initial_states, 1000)
     num_iterations = 100
 
     print("cold starting policy vllm + prm api")

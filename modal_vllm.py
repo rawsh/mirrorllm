@@ -17,6 +17,11 @@ def download_model_to_image(model_dir, model_name, model_revision):
     move_cache()
 
 MODEL_DIR = "/qwen"
+MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-ORPO-1"
+MODEL_REVISION = "a3e4731f8fb3384b07ba112a37cbcc2d4f531623"
+# MODEL_DIR = "/qwen"
+# MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SFT"
+# MODEL_REVISION = "1f75c1204888cc912ad0b186c5b7620235246ffa"
 # # st0
 # MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-0"
 # MODEL_REVISION = "c699a3f7e82a805d6a4b158b033c5d7919230dd1"
@@ -28,8 +33,8 @@ MODEL_DIR = "/qwen"
 # MODEL_REVISION = "9e6d25903688b5678bdbe333c537a58488212024"
 # MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-2"
 # MODEL_REVISION = "a41b6dd0307cf080a83cf20efc25bbf025b47852"
-MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-3"
-MODEL_REVISION = "4bf9608e31850cf1020de695d99f0c1fb9e0575f"
+# MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-SimPO-3"
+# MODEL_REVISION = "4bf9608e31850cf1020de695d99f0c1fb9e0575f"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -55,7 +60,9 @@ vllm_image = (
     .env({"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"})
 )
 
-app = modal.App("vllm-qwen-simpo")
+# app = modal.App("vllm-qwen-simpo")
+# app = modal.App("vllm-qwen-base")
+app = modal.App("vllm-qwen-orpo")
 
 N_GPU = 1
 MINUTES = 60

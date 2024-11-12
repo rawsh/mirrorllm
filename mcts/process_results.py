@@ -129,22 +129,23 @@ class MathReasoningAnalyzer:
             incorrect_paths=incorrect_paths,
             answer_distribution=answers
         )
-
-    # New version of get_paired_examples:
+    
     def get_paired_examples(
         self,
         analyses: List[QuestionAnalysis],
         max_pairs: int = 10000,
-        top_n_correct: int = 50  # New parameter
+        top_n_correct: int = 10,
+        top_n_incorrect: int = 10
     ) -> List[Dict[str, Any]]:
-        """Get paired examples considering multiple correct paths per question"""
+        """Get paired examples with diverse incorrect paths for each correct path"""
         paired_examples = []
+        seen_pairs = set()  # Track unique pairs to avoid duplicates
         
         for analysis in analyses:
             if not analysis.correct_paths or not analysis.incorrect_paths:
                 continue
                 
-            # Sort correct paths by quality (shorter length + higher PRM score)
+            # Sort correct paths by quality (higher PRM score, shorter length)
             sorted_correct = sorted(
                 analysis.correct_paths,
                 key=lambda p: (-p.prm_score, p.path_length)
@@ -161,39 +162,88 @@ class MathReasoningAnalyzer:
                 p for p in top_correct_paths 
                 if p.path_length <= shortest_correct_len * 1.4
             ]
-            
-            # For each correct path, find the most deceptive incorrect path
+
+            # For each correct path, select diverse incorrect paths
             for correct_path in filtered_correct:
-                # Find most deceptive incorrect path relative to this correct path
-                best_incorrect = max(
-                    analysis.incorrect_paths,
-                    key=lambda p: (
-                        p.prm_score,
-                        -abs(p.path_length - correct_path.path_length)
+                # Calculate deceptiveness scores for all incorrect paths
+                scored_incorrect = [
+                    (
+                        incorrect_path,
+                        (
+                            incorrect_path.prm_score,  # Higher score = more deceptive
+                            -abs(incorrect_path.path_length - correct_path.path_length),  # Similar length preferred
+                            hash(str(incorrect_path.steps))  # Use step content as tiebreaker
+                        )
                     )
-                )
+                    for incorrect_path in analysis.incorrect_paths
+                ]
                 
-                paired_examples.append({
-                    'question': analysis.question_text,
-                    'correct_answer': analysis.correct_answer,
-                    'metrics': {
-                        'sc_score': analysis.sc_score,
-                        'sc_correct_percent': analysis.sc_correct_percent,
-                        'total_paths': analysis.total_paths
-                    },
-                    'positive': {
-                        'steps': correct_path.steps,
-                        'answer': correct_path.answer,
-                        'prm_score': correct_path.prm_score,
-                        'path_length': correct_path.path_length
-                    },
-                    'negative': {
-                        'steps': best_incorrect.steps,
-                        'answer': best_incorrect.answer,
-                        'prm_score': best_incorrect.prm_score,
-                        'path_length': best_incorrect.path_length
-                    }
-                })
+                # Sort by deceptiveness score
+                scored_incorrect.sort(key=lambda x: x[1], reverse=True)
+                
+                # Try to select diverse incorrect paths
+                selected_incorrect = []
+                seen_lengths = set()
+                seen_answers = set()
+                
+                # First pass - try to get diverse lengths and answers
+                for incorrect_path, _ in scored_incorrect:
+                    pair_key = (
+                        hash(str(correct_path.steps)), 
+                        hash(str(incorrect_path.steps))
+                    )
+                    
+                    # Skip if we've seen this exact pair
+                    if pair_key in seen_pairs:
+                        continue
+                        
+                    # Try to get diverse lengths and answers
+                    if (
+                        len(selected_incorrect) < top_n_incorrect and
+                        incorrect_path.path_length not in seen_lengths and
+                        incorrect_path.answer not in seen_answers
+                    ):
+                        selected_incorrect.append(incorrect_path)
+                        seen_pairs.add(pair_key)
+                        seen_lengths.add(incorrect_path.path_length)
+                        seen_answers.add(incorrect_path.answer)
+                
+                # Second pass - fill remaining slots if needed
+                if len(selected_incorrect) < top_n_incorrect:
+                    for incorrect_path, _ in scored_incorrect:
+                        pair_key = (
+                            hash(str(correct_path.steps)), 
+                            hash(str(incorrect_path.steps))
+                        )
+                        if pair_key not in seen_pairs:
+                            selected_incorrect.append(incorrect_path)
+                            seen_pairs.add(pair_key)
+                            if len(selected_incorrect) >= top_n_incorrect:
+                                break
+                
+                # Create pairs with selected incorrect paths
+                for incorrect_path in selected_incorrect:
+                    paired_examples.append({
+                        'question': analysis.question_text,
+                        'correct_answer': analysis.correct_answer,
+                        'metrics': {
+                            'sc_score': analysis.sc_score,
+                            'sc_correct_percent': analysis.sc_correct_percent,
+                            'total_paths': analysis.total_paths
+                        },
+                        'positive': {
+                            'steps': correct_path.steps,
+                            'answer': correct_path.answer,
+                            'prm_score': correct_path.prm_score,
+                            'path_length': correct_path.path_length
+                        },
+                        'negative': {
+                            'steps': incorrect_path.steps,
+                            'answer': incorrect_path.answer,
+                            'prm_score': incorrect_path.prm_score,
+                            'path_length': incorrect_path.path_length
+                        }
+                    })
 
         # Sort by quality criteria including SC correct %
         paired_examples.sort(
@@ -211,6 +261,7 @@ class MathReasoningAnalyzer:
     def generate_prm_training_data(self, analyses: List[QuestionAnalysis]) -> List[Dict[str, Any]]:
         """Generate training data for Process Reward Model (PRM) from MCTS paths."""
         prm_examples = []
+        seen_examples = set()  # Track unique (question, steps) combinations
         original_correct_lengths = []
         original_incorrect_lengths = []
         
@@ -229,6 +280,19 @@ class MathReasoningAnalyzer:
                 
                 for k, step in enumerate(path.steps, 1):
                     partial_steps = path.steps[:k]
+                    
+                    # Create unique key based on question and step sequence
+                    example_key = (
+                        hash(analysis.question_text),
+                        hash(str(partial_steps))
+                    )
+                    
+                    # Skip if we've seen this exact example
+                    if example_key in seen_examples:
+                        continue
+                        
+                    seen_examples.add(example_key)
+                    
                     m_k = K - k
                     r_s_k = 0
                     w_s_k = (1 - v_prev) / (m_k + 1) * (1 - 2 * r_s_k)
@@ -259,6 +323,19 @@ class MathReasoningAnalyzer:
                 
                 for k, step in enumerate(path.steps, 1):
                     partial_steps = path.steps[:k]
+                    
+                    # Create unique key based on question and step sequence
+                    example_key = (
+                        hash(analysis.question_text),
+                        hash(str(partial_steps))
+                    )
+                    
+                    # Skip if we've seen this exact example
+                    if example_key in seen_examples:
+                        continue
+                        
+                    seen_examples.add(example_key)
+                    
                     penalize = k == K
                     m_k = K - k if not penalize else K - k + 1
                     r_s_k = 0 if not penalize else 1
@@ -279,35 +356,20 @@ class MathReasoningAnalyzer:
                     })
                     v_prev = v_k
                     
-        # Record length statistics
-        if original_correct_lengths:
-            print("\nOriginal Path Length Statistics:")
-            print(f"Correct paths mean length: {np.mean(original_correct_lengths):.1f} (±{np.std(original_correct_lengths):.1f})")
-        if original_incorrect_lengths:
-            print(f"Incorrect paths mean length: {np.mean(original_incorrect_lengths):.1f} (±{np.std(original_incorrect_lengths):.1f})")
-        
-        # Print complete path statistics
-        complete_correct = [ex for ex in prm_examples if ex["metadata"]["is_correct"] and ex["metadata"]["is_complete"]]
-        complete_incorrect = [ex for ex in prm_examples if not ex["metadata"]["is_correct"] and ex["metadata"]["is_complete"]]
-        
-        print("\nComplete Path Statistics:")
-        print(f"Complete correct paths: {len(complete_correct)}")
-        print(f"Complete incorrect paths: {len(complete_incorrect)}")
-        
-        if complete_correct:
-            print(f"Complete correct mean length: {np.mean([ex['metadata']['path_length'] for ex in complete_correct]):.1f}")
-        if complete_incorrect:
-            print(f"Complete incorrect mean length: {np.mean([ex['metadata']['path_length'] for ex in complete_incorrect]):.1f}")
+        # Print statistics about duplicates avoided
+        print(f"\nTotal examples generated: {len(prm_examples)}")
+        print(f"Unique (question, steps) combinations: {len(seen_examples)}")
+        print(f"Duplicates avoided: {len(seen_examples) - len(prm_examples)}")
         
         return prm_examples
 
 def main():
-    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl')
+    analyzer = MathReasoningAnalyzer('mcts_results.jsonl')
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st0.bak')
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st1.bak')
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st2-v1.bak')
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st2-v2.bak')
-    analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st3.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st3.bak')
     
     # Analyze all questions
     analyses = []
