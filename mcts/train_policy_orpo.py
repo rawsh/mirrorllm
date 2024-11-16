@@ -52,10 +52,11 @@ def train_orpo(
         per_device_train_batch_size=8,
         gradient_accumulation_steps=8,
         # learning_rate=5e-7,
-        learning_rate=8e-6,
+        # learning_rate=8e-6,
         lr_scheduler_type="linear",
         beta=0.1,
-        # learning_rate=5e-6,
+        learning_rate=3e-6,
+        # max_steps
         max_length=2048,
         max_prompt_length=1024,
         gradient_checkpointing=True,
@@ -71,7 +72,7 @@ def train_orpo(
         # lr_scheduler_type="cosine",
         do_eval=True,
         evaluation_strategy="steps",
-        eval_steps=20,
+        eval_steps=10,
         remove_unused_columns=False,
         logging_steps=10,
         logging_first_step=True

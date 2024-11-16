@@ -85,31 +85,40 @@ def build_dataset(tokenizer, train_path, eval_path, disable_binning: bool):
         # Step 2: Assign bin number to each sample in training data
         def assign_bin(example):
             final_step_reward = example['final_step_reward']
-            # Calculate bin number (bins: 0.0-0.1 => bin 0, ..., 0.9-1.0 => bin 9)
-            bin_number = int(final_step_reward * 10)
-            if bin_number == 10:
-                bin_number = 9  # Handle the edge case where final_step_reward == 1.0
-            example['bin'] = bin_number
+            if final_step_reward <= 0.1:
+                # Samples with rewards <= 0.1 get assigned to bin -1 (won't be balanced)
+                example['bin'] = -1
+            else:
+                # Calculate bin number for rewards > 0.1 (bins: 0.1-0.2 => bin 0, ..., 0.9-1.0 => bin 8)
+                bin_number = int((final_step_reward - 0.1) * 10)
+                if bin_number == 9:
+                    bin_number = 8  # Handle the edge case where final_step_reward == 1.0
+                example['bin'] = bin_number
             return example
 
         ds_train = ds_train.map(assign_bin, num_proc=24)
 
-        # Step 3: Get counts of samples in each bin for training data
-        bin_counts_train = Counter(ds_train['bin'])
-        print("Training bin counts before undersampling:", bin_counts_train)
+        # Step 3: Separate low reward samples and get counts for other bins
+        low_reward_indices = [idx for idx, bin_num in enumerate(ds_train['bin']) if bin_num == -1]
+        bin_counts_train = Counter([b for b in ds_train['bin'] if b >= 0])
+        print("Training bin counts before undersampling (excluding ≤0.1):", bin_counts_train)
 
-        # Determine the minimum count across all bins in training data
-        min_count_train = min(bin_counts_train.values())
-        print("Training minimum count per bin:", min_count_train)
+        # Determine the minimum count across all bins in training data (excluding bin -1)
+        min_count_train = min(bin_counts_train.values()) if bin_counts_train else 0
+        print("Training minimum count per bin (excluding ≤0.1):", min_count_train)
 
         # Step 4: Create a mapping from bin to indices for training data
-        bin_to_indices_train = {i: [] for i in range(10)}  # Bins 0 to 9
+        bin_to_indices_train = {i: [] for i in range(9)}  # Bins 0 to 8 (for rewards 0.1-1.0)
         for idx, bin_number in enumerate(ds_train['bin']):
-            bin_to_indices_train[bin_number].append(idx)
+            if bin_number >= 0:  # Only process samples with rewards > 0.1
+                bin_to_indices_train[bin_number].append(idx)
 
         # Randomly sample min_count_train indices per bin for training data
         random.seed(42)
         selected_indices_train = []
+        # First add all low reward samples (≤0.1)
+        selected_indices_train.extend(low_reward_indices)
+        # Then sample from other bins
         for bin_number, indices in bin_to_indices_train.items():
             if len(indices) >= min_count_train:
                 sampled_indices = random.sample(indices, min_count_train)
@@ -122,12 +131,13 @@ def build_dataset(tokenizer, train_path, eval_path, disable_binning: bool):
 
         # Step 5: Create the balanced training dataset
         train_dataset = ds_train.select(selected_indices_train)
-        print("Total training samples after undersampling:", len(train_dataset))
+        print("Total training samples after processing:", len(train_dataset))
+        print("- Samples with reward ≤0.1:", len(low_reward_indices))
+        print("- Samples per bin >0.1:", min_count_train)
     else:
         train_dataset = ds_train
 
-    # Now, build the evaluation dataset
-    # Load and shuffle the evaluation dataset
+    # Now, build the evaluation dataset similarly
     ds_eval = load_dataset(eval_path, split="train").shuffle(seed=42)
     ds_eval = ds_eval.map(tokenize, num_proc=24)
 
@@ -135,22 +145,27 @@ def build_dataset(tokenizer, train_path, eval_path, disable_binning: bool):
         # Assign bins to evaluation data
         ds_eval = ds_eval.map(assign_bin, num_proc=24)
 
-        # Get counts of samples in each bin for evaluation data
-        bin_counts_eval = Counter(ds_eval['bin'])
-        print("Evaluation bin counts before undersampling:", bin_counts_eval)
+        # Separate low reward samples and get counts for other bins
+        eval_low_reward_indices = [idx for idx, bin_num in enumerate(ds_eval['bin']) if bin_num == -1]
+        bin_counts_eval = Counter([b for b in ds_eval['bin'] if b >= 0])
+        print("Evaluation bin counts before undersampling (excluding ≤0.1):", bin_counts_eval)
 
         # Determine the minimum count per bin for evaluation data
         # Set it to be 10% of min_count_train, at least 1
         eval_min_count_per_bin = max(1, int(min_count_train * 0.1))
-        print("Evaluation minimum count per bin:", eval_min_count_per_bin)
+        print("Evaluation minimum count per bin (excluding ≤0.1):", eval_min_count_per_bin)
 
         # Create a mapping from bin to indices for evaluation data
-        bin_to_indices_eval = {i: [] for i in range(10)}  # Bins 0 to 9
+        bin_to_indices_eval = {i: [] for i in range(9)}  # Bins 0 to 8
         for idx, bin_number in enumerate(ds_eval['bin']):
-            bin_to_indices_eval[bin_number].append(idx)
+            if bin_number >= 0:  # Only process samples with rewards > 0.1
+                bin_to_indices_eval[bin_number].append(idx)
 
         # Randomly sample eval_min_count_per_bin indices per bin for evaluation data
         selected_indices_eval = []
+        # First add all low reward samples (≤0.1)
+        selected_indices_eval.extend(eval_low_reward_indices)
+        # Then sample from other bins
         for bin_number, indices in bin_to_indices_eval.items():
             if len(indices) >= eval_min_count_per_bin:
                 sampled_indices = random.sample(indices, eval_min_count_per_bin)
@@ -163,7 +178,9 @@ def build_dataset(tokenizer, train_path, eval_path, disable_binning: bool):
 
         # Create the balanced evaluation dataset
         eval_dataset = ds_eval.select(selected_indices_eval)
-        print("Total evaluation samples after undersampling:", len(eval_dataset))
+        print("Total evaluation samples after processing:", len(eval_dataset))
+        print("- Evaluation samples with reward ≤0.1:", len(eval_low_reward_indices))
+        print("- Evaluation samples per bin >0.1:", eval_min_count_per_bin)
     else:
         eval_dataset = ds_eval
 

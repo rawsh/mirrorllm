@@ -133,7 +133,7 @@ class MathReasoningAnalyzer:
     def get_paired_examples(
         self,
         analyses: List[QuestionAnalysis],
-        max_pairs: int = 10000,
+        max_pairs: int = 20000,
         top_n_correct: int = 10,
         top_n_incorrect: int = 10
     ) -> List[Dict[str, Any]]:
@@ -261,7 +261,6 @@ class MathReasoningAnalyzer:
     def generate_prm_training_data(self, analyses: List[QuestionAnalysis]) -> List[Dict[str, Any]]:
         """Generate training data for Process Reward Model (PRM) from MCTS paths."""
         prm_examples = []
-        seen_examples = set()  # Track unique (question, steps) combinations
         original_correct_lengths = []
         original_incorrect_lengths = []
         
@@ -280,19 +279,6 @@ class MathReasoningAnalyzer:
                 
                 for k, step in enumerate(path.steps, 1):
                     partial_steps = path.steps[:k]
-                    
-                    # Create unique key based on question and step sequence
-                    example_key = (
-                        hash(analysis.question_text),
-                        hash(str(partial_steps))
-                    )
-                    
-                    # Skip if we've seen this exact example
-                    if example_key in seen_examples:
-                        continue
-                        
-                    seen_examples.add(example_key)
-                    
                     m_k = K - k
                     r_s_k = 0
                     w_s_k = (1 - v_prev) / (m_k + 1) * (1 - 2 * r_s_k)
@@ -323,19 +309,6 @@ class MathReasoningAnalyzer:
                 
                 for k, step in enumerate(path.steps, 1):
                     partial_steps = path.steps[:k]
-                    
-                    # Create unique key based on question and step sequence
-                    example_key = (
-                        hash(analysis.question_text),
-                        hash(str(partial_steps))
-                    )
-                    
-                    # Skip if we've seen this exact example
-                    if example_key in seen_examples:
-                        continue
-                        
-                    seen_examples.add(example_key)
-                    
                     penalize = k == K
                     m_k = K - k if not penalize else K - k + 1
                     r_s_k = 0 if not penalize else 1
@@ -356,15 +329,34 @@ class MathReasoningAnalyzer:
                     })
                     v_prev = v_k
                     
-        # Print statistics about duplicates avoided
-        print(f"\nTotal examples generated: {len(prm_examples)}")
-        print(f"Unique (question, steps) combinations: {len(seen_examples)}")
-        print(f"Duplicates avoided: {len(seen_examples) - len(prm_examples)}")
+        # Record length statistics
+        if original_correct_lengths:
+            print("\nOriginal Path Length Statistics:")
+            print(f"Correct paths mean length: {np.mean(original_correct_lengths):.1f} (±{np.std(original_correct_lengths):.1f})")
+        if original_incorrect_lengths:
+            print(f"Incorrect paths mean length: {np.mean(original_incorrect_lengths):.1f} (±{np.std(original_incorrect_lengths):.1f})")
+        
+        # Print complete path statistics
+        complete_correct = [ex for ex in prm_examples if ex["metadata"]["is_correct"] and ex["metadata"]["is_complete"]]
+        complete_incorrect = [ex for ex in prm_examples if not ex["metadata"]["is_correct"] and ex["metadata"]["is_complete"]]
+        
+        print("\nComplete Path Statistics:")
+        print(f"Complete correct paths: {len(complete_correct)}")
+        print(f"Complete incorrect paths: {len(complete_incorrect)}")
+        
+        if complete_correct:
+            print(f"Complete correct mean length: {np.mean([ex['metadata']['path_length'] for ex in complete_correct]):.1f}")
+        if complete_incorrect:
+            print(f"Complete incorrect mean length: {np.mean([ex['metadata']['path_length'] for ex in complete_incorrect]):.1f}")
         
         return prm_examples
 
 def main():
     analyzer = MathReasoningAnalyzer('mcts_results.jsonl')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st1_orpo.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st2_orpo.bak')
+    # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st3_orpo.bak')
+
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st0.bak')
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st1.bak')
     # analyzer = MathReasoningAnalyzer('mcts_results.jsonl.st2-v1.bak')

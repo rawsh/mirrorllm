@@ -19,7 +19,7 @@ BATCH_SIZE = 100  # Reduced batch size since we're doing multiple requests per q
 MAX_RETRIES = 5
 TIMEOUT = 20
 MAX_CONCURRENT = 100
-SAMPLES_PER_QUESTION = 10  # Default to single sample mode, override with CLI arg
+SAMPLES_PER_QUESTION = 1  # Default to single sample mode, override with CLI arg
 
 # Cache decorator for PRM scores
 def async_lru_cache(maxsize=2000):
@@ -108,7 +108,8 @@ async def generate_completion(
     """Generate a single completion."""
     async with semaphore:
         response = await client.completions.create(
-            model="mirrorqwen2.5-0.5b-SimPO-3",
+            # model="mirrorqwen2.5-0.5b-SimPO-3",
+            model="MetaMath-Qwen2.5-0.5b",
             prompt=question,
             max_tokens=1500,
             temperature=0.8

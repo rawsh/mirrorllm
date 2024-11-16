@@ -23,17 +23,18 @@ from tqdm.asyncio import tqdm as atqdm
 POLICY_MODEL_NAME = 'MetaMath-Qwen2.5-0.5b'
 # POLICY_URL = 'https://rawsh--vllm-qwen-simpo-serve.modal.run/v1/'
 # POLICY_URL = 'https://rawsh--vllm-qwen-base-serve.modal.run/v1/'
-POLICY_URL = 'https://rawsh--vllm-qwen-orpo-serve.modal.run/v1/'
+# POLICY_URL = 'https://rawsh--vllm-qwen-orpo-serve.modal.run/v1/'
+POLICY_URL = 'https://rawsh--vllm-qwen-metamath-serve.modal.run/v1/'
 # PRM_URL = 'https://rawsh--mirrorqwen-prm-embedder-score-output.modal.run'
 PRM_URL = 'https://rawsh--mirrorqwen-prm-st-embedder-score-output.modal.run'
 API_KEY = '9FF74944EED19865193F979942FB1'
 
-CONCURRENT_MCTS_SEMAPHORE = Semaphore(50)
+CONCURRENT_MCTS_SEMAPHORE = Semaphore(20)
 POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
 MAX_RETRIES = 20  # Increased from 10s
-TIMEOUT = 30   # Decreased from 30 to fail faster and retry
+TIMEOUT = 10   # Decreased from 30 to fail faster and retry
 
 # Cache decorator and retry function
 def async_lru_cache(maxsize=2000):
@@ -185,14 +186,27 @@ def backpropagate(node, value):
 async def get_next_action(state, client):
     prompt = format_state_for_policy(state)
     async with POLICY_SEMAPHORE:
-        response = await client.completions.create(
+        steps = prompt.split("\n\n")
+        question = steps[0]
+        answer = None
+        if len(steps) > 0:
+            answer = "\n\n".join(steps[1:])
+
+        messages = [
+            {"role": "user", "content": question}
+        ]
+        if answer is not None:
+            messages.append({"role": "assistant", "content": answer})
+        
+        response = await client.chat.completions.create(
             model=POLICY_MODEL_NAME,
-            prompt=prompt,
+            messages=messages,
             max_tokens=250,
             stop=["\n\n"],
-            temperature=0.8
+            temperature=0.8,
         )
-    return response.choices[0].text.strip()
+    # return response.choices[0].text.strip()
+    return response.choices[0].message.content.strip()
 
 def is_correct(state, correct_answer):
     last_step = state.split("\n\n")[-1]
@@ -206,21 +220,46 @@ async def is_terminal(state, correct_answer, client, session):
         return False, False
     
     async with POLICY_SEMAPHORE:
-        response = await client.completions.create(
+        steps = state.split("\n\n")
+        question = steps[0]
+        answer = None
+        if len(steps) > 0:
+            answer = "\n\n".join(steps[1:])
+
+        messages = [
+            {"role": "user", "content": question}
+        ]
+        if answer is not None:
+            messages.append({"role": "assistant", "content": answer})
+        
+        response = await client.chat.completions.create(
             model=POLICY_MODEL_NAME,
-            prompt=state,
+            messages=messages,
             max_tokens=1,
             stop=["\n\n"],
-            temperature=0.3,
-            logprobs=20,
+            temperature=0.8,
+            logprobs=True,
+            top_logprobs=20
         )
-    
-    first_token_top_logprobs = response.choices[0].logprobs.top_logprobs[0]
-    if "" in first_token_top_logprobs:
-        scaled = math.exp(first_token_top_logprobs[""])
+        # response = await client.completions.create(
+        #     model=POLICY_MODEL_NAME,
+        #     prompt=state,
+        #     max_tokens=1,
+        #     stop=["\n\n"],
+        #     temperature=0.3,
+        #     logprobs=20,
+        # )
+
+    first_token_top_logprobs = response.choices[0].logprobs.content[0].top_logprobs
+    first_token_top_logprobs_map = dict()
+    for token_logprob in first_token_top_logprobs:
+        first_token_top_logprobs_map[token_logprob.token] = token_logprob.logprob
+
+    if "" in first_token_top_logprobs_map:
+        scaled = math.exp(first_token_top_logprobs_map[""])
         yes_bigger_than_no = True
-        if "\n\n" in first_token_top_logprobs:
-            scaled_no = math.exp(first_token_top_logprobs["\n\n"])
+        if "\n\n" in first_token_top_logprobs_map:
+            scaled_no = math.exp(first_token_top_logprobs_map["\n\n"])
             yes_bigger_than_no = (scaled > scaled_no)
 
         threshold = 0.95
@@ -382,23 +421,28 @@ async def main():
     initial_states = [(example["question"], example["answer"]) for example in gsm8k]
 
     # SAMPLE 200 QUESTIONS - SELF TRAINING
-    initial_states = random.sample(initial_states, 10)
+    initial_states = random.sample(initial_states, 100)
     # initial_states = random.sample(initial_states, 1000)
-    num_iterations = 250
+    num_iterations = 10
 
     print("cold starting policy vllm + prm api")
 
     # warm up the chat API
     client = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
-    completion_promise = client.completions.create(
+    completion_promise = client.chat.completions.create(
         model=POLICY_MODEL_NAME,
-        prompt="TEST",
-        max_tokens=1,
-        stop=["\n\n"],
-        temperature=0.3,
-        logprobs=20,
-        response_role="assistant"
+        messages=[
+            {"role": "user", "content": "Which is larger 9.11 or 9.9? Respond with just the answer."}
+        ],
+        # max_tokens=3,
+        # stop=["\n\n"],
+        stop=["<|endoftext|>"],
+        temperature=0.8,
+        # Note: logprobs is not available in chat format
     )
+    # res = await completion_promise
+    # print(res)
+    # return
 
     async with aiohttp.ClientSession() as session:
         # warm up PRM api
@@ -410,6 +454,7 @@ async def main():
 
         completion = await completion_promise
         assert(len(completion.choices) == 1)
+        print(completion.choices[0])
         print("warmed up vllm")
     
 

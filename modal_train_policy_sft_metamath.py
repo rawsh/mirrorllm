@@ -19,48 +19,33 @@ image = (
         .pip_install("datasets")
         .pip_install("wandb")
         .pip_install("bitsandbytes")
-        .pip_install("matplotlib")
-        .pip_install("seaborn")
+        .pip_install("unsloth @ git+https://github.com/unslothai/unsloth.git")
+        .pip_install("unsloth_zoo")
+        .pip_install("xformers")
 )
-app = modal.App("train_prm", image=image)
+app = modal.App("train_policy_sft", image=image)
 
 with image.imports():
-    from mcts.train_reward import train_reward_model
+    from mcts.train_policy_sft_metamath import train_sft
 
 MINUTES = 60  # seconds
 HOURS = 60 * MINUTES
-
-vol = modal.Volume.from_name("prm-tmp", create_if_missing=True)
 
 @app.function(
     cpu=2.0,
     # gpu=modal.gpu.A10G(),
     gpu=modal.gpu.H100(),
-    # gpu=modal.gpu.A100(count=4, size="40GB"),
     # gpu=modal.gpu.A100(size="40GB"),
     timeout=20 * HOURS,
     secrets=[
         modal.Secret.from_name("hf-token"),
         modal.Secret.from_name("wandb-token")
-    ],
-    volumes={"/out": vol},
+    ]
 )
-def train_reward_model_upload_to_hf():
-    train_reward_model(
-        # add revision
-        model_name="rawsh/mirrorqwen2.5-0.5b-prm",
-        # model_revision="aed1bcf7d3d984272e329c3843f9c5fd0dfe5ca5", # base
-        # model_revision="42e07d1b708282ac2aae338050d8116f8c69398d", # st0
-        # model_revision="80da7ccc4f107e0cb6bf937d61be4702badfb96b", # st1
-        # model_revision="4d618515c90069993f4b32e4201783efdeebbc22", # st2
-        # fucked up orpo2 prm - it used st0 as base model as well.
-        model_revision="e49e4ca7c847194be48c42c52ad8f871da204300", # orpo2
-        dataset_path="rawsh/mirrorqwen2.5-0.5B-gsm8k-PRM-data-ORPO-2",
-        output_model_name="rawsh/mirrorqwen2.5-0.5b-prm",
-        disable_binning=False
-    )
+def train_policy_model_sft_upload_to_hf():
+    train_sft()
 
 @app.local_entrypoint()
 def main():
     # run the function remotely on Modal
-    train_reward_model_upload_to_hf.remote()
+    train_policy_model_sft_upload_to_hf.remote()

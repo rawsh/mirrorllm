@@ -18,9 +18,7 @@ def download_model_to_image(model_dir, model_name, model_revision):
 
 MODEL_DIR = "/qwen"
 MODEL_NAME = "rawsh/MetaMath-Qwen2.5-0.5b"
-MODEL_REVISION = "286ca8b160074c923b89c318652ab4b979627550"
-# MODEL_NAME = "rawsh/mirrorqwen2.5-0.5b-ORPO-3"
-# MODEL_REVISION = "4b3e3eb18fe84477ee949058484ec951a5b8beb6"
+MODEL_REVISION = "a1a6e9afd500586ce620efa67e278a8dd3ac575e"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -61,12 +59,10 @@ async def get_model_config(engine):
 
 @asynccontextmanager
 async def lifespan(app):
-    # Startup
     try:
-        await asyncio.sleep(0)  # Give chance for event loop to start
+        await asyncio.sleep(0)
         yield
     finally:
-        # Shutdown: Cancel all pending tasks
         tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
         for task in tasks:
             task.cancel()
@@ -92,6 +88,7 @@ def serve():
     from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
     from vllm.entrypoints.openai.serving_engine import BaseModelPath
     from vllm.usage.usage_lib import UsageContext
+    from transformers import AutoTokenizer
 
     web_app = fastapi.FastAPI(
         title=f"OpenAI-compatible {MODEL_NAME} server",
@@ -123,10 +120,7 @@ def serve():
         return {"username": "authenticated_user"}
 
     router = fastapi.APIRouter(dependencies=[fastapi.Depends(is_authenticated)])
-    
-    # wrap vllm's router in auth router
     router.include_router(api_server.router)
-    # add authed vllm to our fastAPI app
     web_app.include_router(router)
 
     engine_args = AsyncEngineArgs(
@@ -146,13 +140,20 @@ def serve():
         model_config = await get_model_config(engine)
         return model_config
 
-    # Use asyncio.run to properly handle the async setup
     model_config = asyncio.run(setup_engine())
     request_logger = RequestLogger(max_log_len=2048)
 
     base_model_paths = [
         BaseModelPath(name=MODEL_NAME.split("/")[1], model_path=MODEL_NAME)
     ]
+    
+    # Qwen chat template with exact formatting
+    TEMPLATE = """<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+{% for message in messages %}<|im_start|>{{ message['role'] }}
+{{ message['content'] }}<|im_end|>
+{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant
+{% endif %}"""
     
     # Set up completion endpoint
     api_server.completion = lambda s: OpenAIServingCompletion(
@@ -164,7 +165,7 @@ def serve():
         request_logger=request_logger,
     )
 
-    # Set up chat endpoint
+    # Set up chat endpoint with tokenizer's chat template
     api_server.chat = lambda s: OpenAIServingChat(
         engine,
         model_config=model_config,
@@ -172,7 +173,8 @@ def serve():
         lora_modules=[],
         prompt_adapters=[],
         request_logger=request_logger,
-        response_role="assistant"
+        response_role="assistant",
+        chat_template=TEMPLATE
     )
 
     return web_app

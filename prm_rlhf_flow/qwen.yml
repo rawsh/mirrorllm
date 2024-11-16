@@ -1,0 +1,80 @@
+# config.yml
+base_model: Qwen/Qwen2.5-0.5B
+# base_model: rawsh/MetaMath-Qwen2.5-0.5b
+model_type: AutoModelForCausalLM
+tokenizer_type: AutoTokenizer
+
+# HuggingFace settings
+push_to_hub: true  # Enable direct upload to HF
+hub_model_id: "rawsh/MetaMath-Qwen2.5-0.5b-PRM"  # Target repo name
+hub_strategy: "every_save"  # or "end", "checkpoint", "all_checkpoints"
+
+# Model loading settings
+load_in_8bit: false
+load_in_4bit: false
+strict: false
+
+# # Dataset configuration
+# chat_template: llama3
+# datasets:
+#   - path: RLHFlow/Mistral-PRM-Data
+#     type: chat_template
+#     split: "train"
+#     train_on_split: "train"
+#     field_messages: conversations
+#     message_field_role: role
+#     message_field_content: content
+
+
+datasets:
+  - path: RLHFlow/Mistral-PRM-Data
+    conversation: llama3
+    type: sharegpt
+    split: "train"
+    train_on_split: "train"
+
+# Training settings
+warmup_ratio: 0.05
+val_set_size: 0.0
+output_dir: /training/prm
+train_on_inputs: false
+
+# Weights & Biases settings
+wandb_project: "preference-models"
+wandb_name: "qwen2.5-0.5b-bs32_lr2e-6_prm"
+# wandb_watch: false
+# wandb_log_model: false
+
+# Model saving settings
+save_safetensors: true
+dataset_prepared_path: /training/data/prepared
+
+# Training hyperparameters
+sequence_len: 8192
+sample_packing: true
+pad_to_sequence_len: true
+trust_remote_code: true
+gradient_checkpointing: true
+gradient_accumulation_steps: 4
+micro_batch_size: 1
+num_epochs: 1
+optimizer: paged_adamw_32bit
+lr_scheduler: cosine
+learning_rate: 2.0e-6
+weight_decay: 0.0
+max_grad_norm: 1.0
+
+# Hardware settings
+bf16: auto
+fp16: false
+tf32: true
+flash_attention: true
+
+# Logging and checkpointing
+logging_steps: 2
+save_strategy: "epoch"
+save_total_limit: 4
+
+# Special tokens
+special_tokens:
+  pad_token: <|endoftext|>
