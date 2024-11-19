@@ -24,7 +24,7 @@ with image.imports():
         def __init__(self, model):
             self.model = model
             
-        @inference.dynamically(batch_size=32, timeout_ms=100.0)
+        @inference.dynamically(batch_size=64, timeout_ms=20.0)
         def score_batch(self, features: dict[str, torch.Tensor]) -> torch.Tensor:
             with torch.no_grad():
                 # Move input to same device as model
@@ -34,7 +34,7 @@ with image.imports():
 @app.cls(
     gpu=modal.gpu.A10G(),
     allow_concurrent_inputs=1000,
-    container_idle_timeout=120,
+    container_idle_timeout=300,
 )
 class Model:
     def load_model(self):
@@ -69,6 +69,7 @@ class Model:
             return_tensors="pt",
             padding=True,
             truncation=True,
+            tokenize=True
         )
         score = await self.score_batch.acall({"input_ids": inputs})
         return {"score": score[0].item()}
