@@ -17,8 +17,8 @@ def download_model_to_image(model_dir, model_name, model_revision):
     move_cache()
 
 MODEL_DIR = "/qwen"
-MODEL_NAME = "rawsh/MetaMath-Qwen2.5-0.5b"
-MODEL_REVISION = "779b469ef1bb4ef8faac05e46b94c09d38112194"
+MODEL_NAME = "rawsh/MetaMath-Qwen2.5-0.5b-PRM"
+MODEL_REVISION = "d230f00aa86b0967a4ee474df3c1f616f7ee7c57"
 
 vllm_image = (
     modal.Image.debian_slim(python_version="3.10")
@@ -44,7 +44,7 @@ vllm_image = (
     .env({"VLLM_ALLOW_LONG_MAX_MODEL_LEN": "1"})
 )
 
-app = modal.App("vllm-qwen-metamath")
+app = modal.App("vllm-qwen-prm")
 
 N_GPU = 1
 MINUTES = 60
@@ -148,21 +148,14 @@ def serve():
     ]
     
     # Qwen chat template with exact formatting
-#     TEMPLATE = """{%- for message in messages %}
-# {{- '<|im_start|>' + message.role + '\n' + message.content.strip() + '\n<|im_end|>\n' }}
-# {%- endfor %}
-# {%- if add_generation_prompt %}
-# {{- '<|im_start|>assistant\n' }}
-# {%- endif %}"""
-#NICEE
-#     TEMPLATE = """{%- for message in messages %}
-# {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' }}
-# {%- endfor %}
-# <|im_start|>assistant
-# """
-    TEMPLATE = """{%- for message in messages %}{%- set content = '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' %}{%- if loop.last and message.role == 'assistant' %}{%- set content = '<|im_start|>' + message.role + '\n' + message.content %}{%- endif %}{{- content }}{%- endfor %}"""
-#     TEMPLATE = """{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content']}}{% if (loop.last and add_generation_prompt) or not loop.last %}{{ '<|im_end|>' + '\n'}}{% endif %}{% endfor %}
-# {% if add_generation_prompt and messages[-1]['role'] != 'assistant' %}{{ '<|im_start|>assistant\n' }}{% endif %}"""
+    TEMPLATE = """<|im_start|>system
+You are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>
+{% for message in messages %}<|im_start|>{{ message['role'] }}
+{{ message['content'] }}<|im_end|>
+{% endfor %}{% if add_generation_prompt %}<|im_start|>assistant
+{% endif %}"""
+
+    # TEMPLATE = """{%- for message in messages %}{%- set content = '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' %}{%- if loop.last and message.role == 'assistant' %}{%- set content = '<|im_start|>' + message.role + '\n' + message.content %}{%- endif %}{{- content }}{%- endfor %}"""
     
     # Set up completion endpoint
     api_server.completion = lambda s: OpenAIServingCompletion(
@@ -183,7 +176,7 @@ def serve():
         prompt_adapters=[],
         request_logger=request_logger,
         response_role="assistant",
-        chat_template=TEMPLATE,
+        chat_template=TEMPLATE
     )
 
     return web_app
