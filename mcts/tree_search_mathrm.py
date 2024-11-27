@@ -4,12 +4,13 @@ import aiohttp
 import json
 from openai import AsyncOpenAI
 import time
-import random
+import random  # Added for jitter in retry logic
 from functools import wraps
 from collections import OrderedDict
 from asyncio import Semaphore, TimeoutError
 from datasets import load_dataset
 from tqdm import tqdm
+from tqdm.asyncio import tqdm as atqdm
 
 POLICY_MODEL_NAME = 'MetaMath-Qwen2.5-0.5b'
 POLICY_URL = 'https://rawsh--vllm-qwen-metamath-serve.modal.run/v1/'
@@ -21,22 +22,18 @@ API_KEY = '9FF74944EED19865193F979942FB1'
 POLICY_CLIENT = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
 PRM_CLIENT = AsyncOpenAI(base_url=PRM_URL, api_key=API_KEY)
 
-# Semaphore limits
+# More aggressive semaphore limits
 CONCURRENT_MCTS_SEMAPHORE = Semaphore(100)
 POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
-# MCTS settings
-MCTS_ITER_BATCH_SIZE = 10
-
-# Retry settings
+# More aggressive retry settings
 MAX_RETRIES = 10
-TIMEOUT = 45
+TIMEOUT = 60
 
 # Cache decorator and retry function
 def async_lru_cache(maxsize=2000):
     cache = OrderedDict()
-
     def decorator(func):
         @wraps(func)
         async def wrapper(*args, **kwargs):
@@ -57,6 +54,7 @@ async def retry_with_timeout(func, *args, **kwargs):
             print(f"WARNING: timeout during attempt {attempt}")
             if attempt == MAX_RETRIES - 1:
                 raise
+            # Faster backoff
             delay = min(0.1 * (attempt + 1), 1.0)
             await asyncio.sleep(delay)
 
@@ -68,10 +66,8 @@ class Node:
         self.visits = 0
         self.total_value = 0
         self.prm_value = None
+        self.step_scores = None
         self.virtual_loss = 0
-        # Cache splits and last step
-        self.steps = self.state.split("\n\n")
-        self.last_step = self.steps[-1].strip()
 
     def __hash__(self):
         return hash(self.state)
@@ -80,18 +76,20 @@ class Node:
         return isinstance(other, Node) and self.state == other.state
 
     async def evaluate(self):
-        """Evaluate this node, caching the PRM value to avoid redundant evaluations."""
-        if self.prm_value is not None:
-            return self.prm_value
+        """Evaluate this node, caching step scores for reuse by children."""
+        if self.step_scores is None:
+            # Get parts of the solution
+            parts = self.state.split("\n\n")
+            if len(parts) < 2:
+                print("WARNING: len(parts) < 2")
+                self.step_scores = []
+                self.prm_value = 1e-10
+                return self.prm_value
 
-        if len(self.steps) < 2:
-            print("WARNING: len(steps) < 2")
-            self.prm_value = 1e-10
-            return self.prm_value
-
-        async with PRM_SEMAPHORE:
-            new_score = await evaluate_step(self)
-            self.prm_value = new_score
+            new_prefix = self.state
+            async with PRM_SEMAPHORE:
+                new_score = await evaluate_step(new_prefix)
+                self.prm_value = new_score
 
         return self.prm_value
 
@@ -110,8 +108,8 @@ class MCTSProgress:
         self.fully_completed_questions = 0  # Questions that completed all iterations
 
         # Single progress bar with dynamic description
-        self.pbar = tqdm(total=self.total_iterations,
-                         desc=self.get_progress_description())
+        self.pbar = tqdm(total=self.total_iterations, 
+                        desc=self.get_progress_description())
 
     def get_progress_description(self):
         sc_pct = (self.correct_sc / max(1, self.fully_completed_questions)) * 100
@@ -123,13 +121,14 @@ class MCTSProgress:
                 f"ANY: {any_pct:.1f}% | "
                 f"BEST: {best_pct:.1f}% | "
                 f"Actions: {self.total_actions}")
-
+    
     def update_progress(self):
         self.pbar.set_description(self.get_progress_description())
 
     def increment_iteration(self):
         self.completed_iterations += 1
         self.pbar.update(1)
+        # No need to update description here
         self.pbar.set_description(self.get_progress_description())
 
     def complete_question(self, is_sc_correct, is_any_correct, is_best_correct, is_fully_completed, has_terminal_nodes):
@@ -193,7 +192,7 @@ async def best_uct_child(node):
 
 async def expand(node, client, session, progress_tracker):
     async with POLICY_SEMAPHORE:
-        action = await retry_with_timeout(get_next_action, node, client)
+        action = await retry_with_timeout(get_next_action, node.state, client)
     new_state = apply_action(node.state, action)
     child = Node(new_state, parent=node)
     node.children[action] = child
@@ -209,23 +208,23 @@ async def simulate(node, correct_answer, client, session, terminal_nodes, progre
     while depth < max_depth:
         if current_node in terminal_nodes:
             break
-
+        
         async with POLICY_SEMAPHORE:
-            action, is_term = await retry_with_timeout(get_next_action, current_node, client)
-
+            action, is_term = await retry_with_timeout(get_next_action, current_node.state, client)
+        
         new_state = apply_action(current_node.state, action)
         child_node = Node(new_state, parent=current_node)
         progress_tracker.total_actions += 1
 
-        if is_term or is_correct(child_node, correct_answer):
-            terminal_nodes[child_node] = child_node  # Corrected line
+        if is_term or is_correct(new_state, correct_answer):
+            terminal_nodes.add(child_node)
             current_node = child_node
             break
 
         current_node = child_node
         depth += 1
 
-    return await current_node.evaluate()
+    return await retry_with_timeout(evaluate_state, current_node.state, session)
 
 async def backpropagate(node, value):
     while node:
@@ -237,8 +236,19 @@ async def backpropagate(node, value):
         node.total_value += value
         node = node.parent
 
-async def get_next_action(node, client):
-    messages = build_messages(node.steps)
+async def get_next_action(state, client):
+    steps = state.split("\n\n")
+    question = steps[0]
+    answer = "\n\n".join(steps[1:]) if len(steps) > 1 else None
+
+    messages = [
+        {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."},
+        {"role": "user", "content": question}
+    ]
+    if answer:
+        messages.append({"role": "assistant", "content": answer + "\n\n"})
+    else:
+        messages.append({"role": "assistant", "content": ""})
 
     response = await client.chat.completions.create(
         timeout=TIMEOUT,
@@ -258,17 +268,47 @@ async def get_next_action(node, client):
     content = response.choices[0].message.content.strip()
 
     # Determine if the assistant has stopped generating due to the stop sequence
-    is_term = (response.choices[0].finish_reason == 'stop' and
-               response.choices[0].stop_reason != '\n\n')
+    is_term = (response.choices[0].finish_reason == 'stop' and \
+            response.choices[0].stop_reason != '\n\n')
     return content, is_term
 
-def is_correct(node, correct_answer):
-    return correct_answer.strip() in node.last_step
+def is_correct(state, correct_answer):
+    last_step = state.split("\n\n")[-1]
+    # Normalize the strings for comparison
+    return correct_answer.strip() in last_step.strip()
+
+# Create single global client
+PRM_CLIENT = AsyncOpenAI(base_url=PRM_URL, api_key=API_KEY)
+
+# Cache for step scores
+step_scores_cache = {}
 
 @async_lru_cache(maxsize=10000)
-async def evaluate_step(node) -> float:
+async def evaluate_step(step_prefix: str) -> float:
     """Evaluate a single solution step using PRM."""
-    messages = build_messages(node.steps, is_prm=True)
+    steps = step_prefix.split("\n\n")
+    question = steps[0]
+    curr_step = steps[-1]
+
+    # Format messages for just this step evaluation
+    if len(steps) == 2:
+        messages = [
+            {"role": "user", "content": f"{question} Step 1: {curr_step}"}
+        ]
+    else:
+        messages = [
+            {"role": "user", "content": f"{question} Step 1: {steps[1]}"}
+        ]
+        for i, step in enumerate(steps[2:-1], start=2):
+            messages.extend([
+                {"role": "assistant", "content": "+"},
+                {"role": "user", "content": f"Step {i}: {step}"}
+            ])
+        curr_step_num = len(steps)-1
+        messages.extend([
+            {"role": "assistant", "content": "+"},
+            {"role": "user", "content": f"Step {curr_step_num}: {curr_step}"}
+        ])
 
     response = await PRM_CLIENT.chat.completions.create(
         timeout=TIMEOUT,
@@ -296,39 +336,11 @@ async def evaluate_step(node) -> float:
     final_prob = prob_plus
     return final_prob
 
-def build_messages(steps, is_prm=False):
-    """Helper function to build messages for OpenAI API."""
-    question = steps[0]
-    if is_prm:
-        if len(steps) == 2:
-            messages = [
-                {"role": "user", "content": f"{question} Step 1: {steps[1]}"}
-            ]
-        else:
-            messages = [
-                {"role": "user", "content": f"{question} Step 1: {steps[1]}"}
-            ]
-            for i, step in enumerate(steps[2:-1], start=2):
-                messages.extend([
-                    {"role": "assistant", "content": "+"},
-                    {"role": "user", "content": f"Step {i}: {step}"}
-                ])
-            curr_step_num = len(steps) - 1
-            messages.extend([
-                {"role": "assistant", "content": "+"},
-                {"role": "user", "content": f"Step {curr_step_num}: {steps[-1]}"}
-            ])
-    else:
-        answer = "\n\n".join(steps[1:]) if len(steps) > 1 else None
-        messages = [
-            {"role": "system", "content": "You are Qwen, created by Alibaba Cloud. You are a helpful assistant."},
-            {"role": "user", "content": question}
-        ]
-        if answer:
-            messages.append({"role": "assistant", "content": answer + "\n\n"})
-        else:
-            messages.append({"role": "assistant", "content": ""})
-    return messages
+async def evaluate_state(state, session):
+    """Simplified evaluate_state that creates a temporary node for evaluation."""
+    node = Node(state)
+    score =  await node.evaluate()
+    return score
 
 def apply_action(state, action):
     return f"{state}\n\n{action}"
@@ -347,29 +359,28 @@ async def find_best_leaf_by_prm(node, session):
     leaf_nodes = []
     collect_leaf_nodes(node, leaf_nodes)
 
-    # Evaluate leaves in batches
-    batch_size = 100  # Adjust batch size as needed
-    for i in range(0, len(leaf_nodes), batch_size):
-        batch = leaf_nodes[i:i+batch_size]
-        await asyncio.gather(*[leaf.evaluate() for leaf in batch])
-
+    # Evaluate all leaves in parallel
+    await asyncio.gather(*[leaf.evaluate() for leaf in leaf_nodes])
+    
     return max(leaf_nodes, key=lambda leaf: leaf.prm_value)
+
 
 async def mcts_iteration(root, correct_answer, client, session, terminal_nodes, progress_tracker):
     leaf = await select(root)
 
-    if leaf in terminal_nodes:
+    if leaf.state in terminal_nodes:
         return
 
-    action, is_term = await retry_with_timeout(get_next_action, leaf, client)
+    action, is_term = await retry_with_timeout(get_next_action, leaf.state, client)
     new_state = apply_action(leaf.state, action)
     child = Node(new_state, parent=leaf)
     leaf.children[action] = child
     progress_tracker.total_actions += 1
 
-    if is_term or is_correct(child, correct_answer):
-        terminal_nodes[child] = child  # Corrected line
-        value = await child.evaluate()
+    # Check if the last step contains the correct answer
+    if is_term or is_correct(new_state, correct_answer):
+        terminal_nodes.add(child)
+        value = await retry_with_timeout(evaluate_state, child.state, session)
         await backpropagate(child, value)
     else:
         value = await simulate(
@@ -382,95 +393,87 @@ async def mcts_iteration(root, correct_answer, client, session, terminal_nodes, 
 async def mcts(root_state, correct_answer, num_iterations, session, progress_tracker):
     root = Node(root_state)
     client = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
-    # Use a dictionary for terminal nodes to improve performance
-    terminal_nodes = {}
+    terminal_nodes = set()
 
-    async with CONCURRENT_MCTS_SEMAPHORE:
-        for i in range(0, num_iterations, MCTS_ITER_BATCH_SIZE):
-            tasks = [
-                mcts_iteration(root, correct_answer, client, session, terminal_nodes, progress_tracker)
-                for _ in range(min(MCTS_ITER_BATCH_SIZE, num_iterations - i))
-            ]
-            await asyncio.gather(*tasks)
+    tasks = [
+        mcts_iteration(root, correct_answer, client, session, terminal_nodes, progress_tracker)
+        for _ in range(num_iterations)
+    ]
+    await asyncio.gather(*tasks)
 
-        return root, terminal_nodes
+    return root, terminal_nodes
 
 async def run_mcts(initial_state, correct_answer, num_iterations, session, progress_tracker):
-    start_time = time.time()
-    root, terminal_nodes = await mcts(initial_state, correct_answer, num_iterations, session, progress_tracker)
-    end_time = time.time()
+    async with CONCURRENT_MCTS_SEMAPHORE:
+        start_time = time.time()
+        root, terminal_nodes = await mcts(initial_state, correct_answer, num_iterations, session, progress_tracker)
+        end_time = time.time()
 
-    best_leaf = await find_best_leaf_by_prm(root, session)
+        best_leaf = await find_best_leaf_by_prm(root, session)
 
-    terminal_paths = []
-    answers = {}
-    max_prm_score = float('-inf')
-    best_prm_path_correct = False
-    terminal_correct_count = 0
+        terminal_paths = []
+        answers = {}
+        max_prm_score = float('-inf')
+        best_prm_path_correct = False
+        terminal_correct_count = 0
 
-    for node in terminal_nodes.values():
-        if node.prm_value is None:
+        for node in terminal_nodes:
             await node.evaluate()
-        is_node_correct = is_correct(node, correct_answer)
-        if is_node_correct:
-            terminal_correct_count += 1
+            is_node_correct = is_correct(node.state, correct_answer)
+            if is_node_correct:
+                terminal_correct_count += 1
 
-        answer = node.last_step
-        answers[answer] = answers.get(answer, 0) + 1
+            last_step = node.state.split("\n\n")[-1]
+            answer = last_step.strip()
+            answers[answer] = answers.get(answer, 0) + 1
 
-        if node.prm_value > max_prm_score:
-            max_prm_score = node.prm_value
-            best_prm_path_correct = is_node_correct
+            if node.prm_value > max_prm_score:
+                max_prm_score = node.prm_value
+                best_prm_path_correct = is_node_correct
 
-        terminal_paths.append({
-            "final_state": node.state,
-            "score": node.prm_value,
-            "correct": is_node_correct
-        })
+            terminal_paths.append({
+                "final_state": node.state,
+                "score": node.prm_value,
+                "correct": is_node_correct
+            })
 
-    is_best_correct = is_correct(best_leaf, correct_answer)
+        is_best_correct = is_correct(best_leaf.state, correct_answer)
 
-    # Determine self-consistency correctness
-    is_sc_correct = False
-    if answers:
-        most_common_answer = max(answers.items(), key=lambda x: x[1])[0]
-        is_sc_correct = correct_answer.strip() in most_common_answer
+        # Determine self-consistency correctness
+        is_sc_correct = False
+        if answers:
+            most_common_answer = max(answers.items(), key=lambda x: x[1])[0]
+            is_sc_correct = correct_answer.strip() in most_common_answer
 
-    is_any_correct = terminal_correct_count > 0
-    is_fully_completed = num_iterations == progress_tracker.iterations_per_question
+        is_any_correct = terminal_correct_count > 0
+        is_fully_completed = num_iterations == progress_tracker.iterations_per_question
 
-    result = {
-        "question": initial_state,
-        "correct_answer": correct_answer,
-        "statistics": {
-            "num_iterations": num_iterations,
-            "execution_time": end_time - start_time,
-            "total_terminal_nodes": len(terminal_nodes),
-            "correct_terminal_nodes": terminal_correct_count,
-            "self_consistency_correct": is_sc_correct,
-            "any_correct": is_any_correct,
-            "has_terminal_nodes": len(terminal_nodes) > 0,
-            "best_prm_path_correct": best_prm_path_correct,
-            "fully_completed": is_fully_completed
-        },
-        "best_path": {
-            "final_state": best_leaf.state,
-            "score": best_leaf.prm_value,
-            "correct": is_best_correct
-        },
-        "terminal_paths": terminal_paths
-    }
+        result = {
+            "question": initial_state,
+            "correct_answer": correct_answer,
+            "statistics": {
+                "num_iterations": num_iterations,
+                "execution_time": end_time - start_time,
+                "total_terminal_nodes": len(terminal_nodes),
+                "correct_terminal_nodes": terminal_correct_count,
+                "self_consistency_correct": is_sc_correct,
+                "any_correct": is_any_correct,
+                "has_terminal_nodes": len(terminal_nodes) > 0,
+                "best_prm_path_correct": best_prm_path_correct,
+                "fully_completed": is_fully_completed
+            },
+            "best_path": {
+                "final_state": best_leaf.state,
+                "score": best_leaf.prm_value,
+                "correct": is_best_correct
+            },
+            "terminal_paths": terminal_paths
+        }
 
-    progress_tracker.complete_question(
-        is_sc_correct, is_any_correct, best_prm_path_correct, is_fully_completed, len(terminal_nodes) > 0
-    )
-    return result
-
-# nov 26th results
-# iter=10:  
-# iter=20:  
-# iter=50:  85%
-# iter=100: 79%
+        progress_tracker.complete_question(
+            is_sc_correct, is_any_correct, best_prm_path_correct, is_fully_completed, len(terminal_nodes) > 0
+        )
+        return result
 
 async def main():
     # Set random seed for reproducibility
@@ -484,13 +487,13 @@ async def main():
     gsm8k = gsm8k.map(process, num_proc=24)
     initial_states = [(example["question"], example["answer"]) for example in gsm8k]
     initial_states = random.sample(initial_states, 100)
-    num_iterations = 50
+    num_iterations = 100
 
     print("cold starting policy vllm + prm api")
 
     # warm up the chat API
     client = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
-
+    
     async with aiohttp.ClientSession() as session:
         # First warm up vLLM API
         completion_promise = client.chat.completions.create(
@@ -532,20 +535,20 @@ async def main():
         tasks = []
         for state, answer in initial_states:
             tasks.append(run_mcts(state, answer, num_iterations, session, progress_tracker))
-
+        
         results = await asyncio.gather(*tasks)
         progress_tracker.close()
-
+    
     # Calculate and print final statistics
     total_questions = len(results)
     sc_correct = sum(1 for r in results if r["statistics"]["self_consistency_correct"])
     any_correct = sum(1 for r in results if r["statistics"]["any_correct"])
-
+    
     print(f"\nFinal Statistics:")
     print(f"Total Questions: {total_questions}")
     print(f"Self-Consistency Accuracy: {(sc_correct/total_questions)*100:.2f}%")
     print(f"Any-Correct Accuracy: {(any_correct/total_questions)*100:.2f}%")
-
+    
     # Write results
     with open("mcts_results.jsonl", "w") as f:
         for result in results:
