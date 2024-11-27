@@ -28,7 +28,7 @@ POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
 # More aggressive retry settings
-MAX_RETRIES = 5
+MAX_RETRIES = 10
 TIMEOUT = 45
 
 # Cache decorator and retry function
@@ -519,8 +519,8 @@ async def main():
     gsm8k = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=42)
     gsm8k = gsm8k.map(process, num_proc=24)
     initial_states = [(example["question"], example["answer"]) for example in gsm8k]
-    initial_states = random.sample(initial_states, 1)
-    num_iterations = 1
+    initial_states = random.sample(initial_states, 100)
+    num_iterations = 50
 
     print("cold starting policy vllm + prm api")
 
