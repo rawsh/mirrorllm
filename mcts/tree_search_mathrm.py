@@ -23,13 +23,13 @@ POLICY_CLIENT = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
 PRM_CLIENT = AsyncOpenAI(base_url=PRM_URL, api_key=API_KEY)
 
 # More aggressive semaphore limits
-CONCURRENT_MCTS_SEMAPHORE = Semaphore(100)
+CONCURRENT_MCTS_SEMAPHORE = Semaphore(200)
 POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
 # More aggressive retry settings
-MAX_RETRIES = 10
-TIMEOUT = 60
+MAX_RETRIES = 5
+TIMEOUT = 45
 
 # Cache decorator and retry function
 def async_lru_cache(maxsize=2000):
@@ -256,7 +256,8 @@ async def get_next_action(state, client):
         messages=messages,
         max_tokens=150,
         stop=["<|endoftext|>", "<|im_end|>", "\n\n"],
-        temperature=0.7,
+        # temperature=0.7,
+        temperature=1.0,
         extra_body={
             "repetition_penalty": 1.05,
             "top_p": 0.8,
@@ -366,29 +367,30 @@ async def find_best_leaf_by_prm(node, session):
 
 
 async def mcts_iteration(root, correct_answer, client, session, terminal_nodes, progress_tracker):
-    leaf = await select(root)
+    async with CONCURRENT_MCTS_SEMAPHORE:
+        leaf = await select(root)
 
-    if leaf.state in terminal_nodes:
-        return
+        if leaf.state in terminal_nodes:
+            return
 
-    action, is_term = await retry_with_timeout(get_next_action, leaf.state, client)
-    new_state = apply_action(leaf.state, action)
-    child = Node(new_state, parent=leaf)
-    leaf.children[action] = child
-    progress_tracker.total_actions += 1
+        action, is_term = await retry_with_timeout(get_next_action, leaf.state, client)
+        new_state = apply_action(leaf.state, action)
+        child = Node(new_state, parent=leaf)
+        leaf.children[action] = child
+        progress_tracker.total_actions += 1
 
-    # Check if the last step contains the correct answer
-    if is_term or is_correct(new_state, correct_answer):
-        terminal_nodes.add(child)
-        value = await retry_with_timeout(evaluate_state, child.state, session)
-        await backpropagate(child, value)
-    else:
-        value = await simulate(
-            child, correct_answer, client, session, terminal_nodes, progress_tracker
-        )
-        await backpropagate(child, value)
+        # Check if the last step contains the correct answer
+        if is_term or is_correct(new_state, correct_answer):
+            terminal_nodes.add(child)
+            value = await retry_with_timeout(evaluate_state, child.state, session)
+            await backpropagate(child, value)
+        else:
+            value = await simulate(
+                child, correct_answer, client, session, terminal_nodes, progress_tracker
+            )
+            await backpropagate(child, value)
 
-    progress_tracker.increment_iteration()
+        progress_tracker.increment_iteration()
 
 async def mcts(root_state, correct_answer, num_iterations, session, progress_tracker):
     root = Node(root_state)
@@ -404,76 +406,107 @@ async def mcts(root_state, correct_answer, num_iterations, session, progress_tra
     return root, terminal_nodes
 
 async def run_mcts(initial_state, correct_answer, num_iterations, session, progress_tracker):
-    async with CONCURRENT_MCTS_SEMAPHORE:
-        start_time = time.time()
-        root, terminal_nodes = await mcts(initial_state, correct_answer, num_iterations, session, progress_tracker)
-        end_time = time.time()
+    # async with CONCURRENT_MCTS_SEMAPHORE:
+    start_time = time.time()
+    root, terminal_nodes = await mcts(initial_state, correct_answer, num_iterations, session, progress_tracker)
+    end_time = time.time()
 
-        best_leaf = await find_best_leaf_by_prm(root, session)
+    best_leaf = await find_best_leaf_by_prm(root, session)
 
-        terminal_paths = []
-        answers = {}
-        max_prm_score = float('-inf')
-        best_prm_path_correct = False
-        terminal_correct_count = 0
+    terminal_paths = []
+    answers = {}
+    max_prm_score = float('-inf')
+    best_prm_path_correct = False
+    terminal_correct_count = 0
 
-        for node in terminal_nodes:
-            await node.evaluate()
-            is_node_correct = is_correct(node.state, correct_answer)
-            if is_node_correct:
-                terminal_correct_count += 1
+    for node in terminal_nodes:
+        await node.evaluate()
+        is_node_correct = is_correct(node.state, correct_answer)
+        if is_node_correct:
+            terminal_correct_count += 1
 
-            last_step = node.state.split("\n\n")[-1]
-            answer = last_step.strip()
-            answers[answer] = answers.get(answer, 0) + 1
+        last_step = node.state.split("\n\n")[-1]
+        answer = last_step.strip()
+        answers[answer] = answers.get(answer, 0) + 1
 
-            if node.prm_value > max_prm_score:
-                max_prm_score = node.prm_value
-                best_prm_path_correct = is_node_correct
+        if node.prm_value > max_prm_score:
+            max_prm_score = node.prm_value
+            best_prm_path_correct = is_node_correct
 
-            terminal_paths.append({
-                "final_state": node.state,
-                "score": node.prm_value,
-                "correct": is_node_correct
-            })
+        terminal_paths.append({
+            "final_state": node.state,
+            "score": node.prm_value,
+            "correct": is_node_correct
+        })
 
-        is_best_correct = is_correct(best_leaf.state, correct_answer)
+    is_best_correct = is_correct(best_leaf.state, correct_answer)
 
-        # Determine self-consistency correctness
-        is_sc_correct = False
-        if answers:
-            most_common_answer = max(answers.items(), key=lambda x: x[1])[0]
-            is_sc_correct = correct_answer.strip() in most_common_answer
+    # Determine self-consistency correctness
+    is_sc_correct = False
+    if answers:
+        most_common_answer = max(answers.items(), key=lambda x: x[1])[0]
+        is_sc_correct = correct_answer.strip() in most_common_answer
 
-        is_any_correct = terminal_correct_count > 0
-        is_fully_completed = num_iterations == progress_tracker.iterations_per_question
+    is_any_correct = terminal_correct_count > 0
+    is_fully_completed = num_iterations == progress_tracker.iterations_per_question
 
-        result = {
-            "question": initial_state,
-            "correct_answer": correct_answer,
-            "statistics": {
-                "num_iterations": num_iterations,
-                "execution_time": end_time - start_time,
-                "total_terminal_nodes": len(terminal_nodes),
-                "correct_terminal_nodes": terminal_correct_count,
-                "self_consistency_correct": is_sc_correct,
-                "any_correct": is_any_correct,
-                "has_terminal_nodes": len(terminal_nodes) > 0,
-                "best_prm_path_correct": best_prm_path_correct,
-                "fully_completed": is_fully_completed
-            },
-            "best_path": {
-                "final_state": best_leaf.state,
-                "score": best_leaf.prm_value,
-                "correct": is_best_correct
-            },
-            "terminal_paths": terminal_paths
-        }
+    result = {
+        "question": initial_state,
+        "correct_answer": correct_answer,
+        "statistics": {
+            "num_iterations": num_iterations,
+            "execution_time": end_time - start_time,
+            "total_terminal_nodes": len(terminal_nodes),
+            "correct_terminal_nodes": terminal_correct_count,
+            "self_consistency_correct": is_sc_correct,
+            "any_correct": is_any_correct,
+            "has_terminal_nodes": len(terminal_nodes) > 0,
+            "best_prm_path_correct": best_prm_path_correct,
+            "fully_completed": is_fully_completed
+        },
+        "best_path": {
+            "final_state": best_leaf.state,
+            "score": best_leaf.prm_value,
+            "correct": is_best_correct
+        },
+        "terminal_paths": terminal_paths
+    }
 
-        progress_tracker.complete_question(
-            is_sc_correct, is_any_correct, best_prm_path_correct, is_fully_completed, len(terminal_nodes) > 0
-        )
-        return result
+    progress_tracker.complete_question(
+        is_sc_correct, is_any_correct, best_prm_path_correct, is_fully_completed, len(terminal_nodes) > 0
+    )
+    return result
+
+# [info]
+# greedy base sft:     57.0%
+# greedy base:         41.6%
+# greedy instruct:     49.6%
+# greedy math-1.5b:    71.3%
+# greedy math-1.5b-it: 84.8%
+
+# [policy temp 0.7, prm greedy]
+# mcts=1:   72% best (72% pass, 72% sc)
+# mcts=2:   71% best (76% pass, 67% sc)
+# mcts=3:   71% best (83% pass, 67% sc)
+# mcts=4:   74% best (85% pass, 67% sc)
+# mcts=5:   73% best (90% pass, 66% sc)
+# mcts=6:   75% best (92% pass, 73% sc)
+# mcts=7:   76% best (91% pass, 69% sc)
+# mcts=8:   75% best (91% pass, 72% sc)
+# mcts=9:   78% best (91% pass, 73% sc)
+# mcts=10:  82% best (92% pass)
+# mcts=20:  83% best (94% pass)
+# mcts=30:  84% best (96% pass)
+# mcts=40:  85% best (97% pass)
+# mcts=50:  88% best (95% pass) 
+# mcts=100: 86% best (98% pass)
+# mcts=200: 84% best (99% pass)
+
+# [policy temp 1.0, prm greedy]
+# wtf. tmp 1.0??? that big a difference?
+# mcts=4:   80% best (87% pass, 75% sc)
+# mcts=10:  78% best (90% pass, 69% sc)
+# mcts=20:  83% best (94% pass, 71% sc)
 
 async def main():
     # Set random seed for reproducibility
@@ -486,8 +519,8 @@ async def main():
     gsm8k = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=42)
     gsm8k = gsm8k.map(process, num_proc=24)
     initial_states = [(example["question"], example["answer"]) for example in gsm8k]
-    initial_states = random.sample(initial_states, 100)
-    num_iterations = 100
+    initial_states = random.sample(initial_states, 1)
+    num_iterations = 1
 
     print("cold starting policy vllm + prm api")
 
@@ -541,18 +574,32 @@ async def main():
     
     # Calculate and print final statistics
     total_questions = len(results)
+    best_correct = sum(1 for r in results if r["statistics"]["best_prm_path_correct"])
     sc_correct = sum(1 for r in results if r["statistics"]["self_consistency_correct"])
     any_correct = sum(1 for r in results if r["statistics"]["any_correct"])
-    
+
     print(f"\nFinal Statistics:")
     print(f"Total Questions: {total_questions}")
+    print(f"Best-PRM Accuracy: {(best_correct/total_questions)*100:.2f}%")
     print(f"Self-Consistency Accuracy: {(sc_correct/total_questions)*100:.2f}%")
     print(f"Any-Correct Accuracy: {(any_correct/total_questions)*100:.2f}%")
-    
-    # Write results
-    with open("mcts_results.jsonl", "w") as f:
+
+    # Write results to both JSONL and TXT
+    with open("mcts_results.jsonl", "w") as f_json, open("mcts_results.txt", "w") as f_txt:
+        # Write summary stats to TXT
+        f_txt.write("Final Statistics\n")
+        f_txt.write(f"Total Questions: {total_questions}\n")
+        f_txt.write(f"Best-PRM Accuracy: {(best_correct/total_questions)*100:.2f}%\n")
+        f_txt.write(f"Self-Consistency Accuracy: {(sc_correct/total_questions)*100:.2f}%\n")
+        f_txt.write(f"Any-Correct Accuracy: {(any_correct/total_questions)*100:.2f}%\n\n")
+        
+        # Write detailed results
         for result in results:
-            f.write(json.dumps(result) + "\n")
+            f_json.write(json.dumps(result) + "\n")
+            f_txt.write(f"Question {result['question']}:\n")
+            f_txt.write(f"Best-PRM: {result['statistics']['best_prm_path_correct']}\n")
+            f_txt.write(f"Self-Consistency: {result['statistics']['self_consistency_correct']}\n")
+            f_txt.write(f"Any-Correct: {result['statistics']['any_correct']}\n\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
