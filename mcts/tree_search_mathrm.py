@@ -23,13 +23,13 @@ POLICY_CLIENT = AsyncOpenAI(base_url=POLICY_URL, api_key=API_KEY)
 PRM_CLIENT = AsyncOpenAI(base_url=PRM_URL, api_key=API_KEY)
 
 # More aggressive semaphore limits
-CONCURRENT_MCTS_SEMAPHORE = Semaphore(200)
+CONCURRENT_MCTS_SEMAPHORE = Semaphore(1000)
 POLICY_SEMAPHORE = Semaphore(1000)
 PRM_SEMAPHORE = Semaphore(1000)
 
 # More aggressive retry settings
 MAX_RETRIES = 10
-TIMEOUT = 45
+TIMEOUT = 60
 
 # Cache decorator and retry function
 def async_lru_cache(maxsize=2000):
@@ -203,7 +203,8 @@ async def expand(node, client, session, progress_tracker):
 async def simulate(node, correct_answer, client, session, terminal_nodes, progress_tracker):
     current_node = node
     depth = 0
-    max_depth = 10
+    # max_depth = 10
+    max_depth = 20 # set to 20 for aime?
 
     while depth < max_depth:
         if current_node in terminal_nodes:
@@ -271,6 +272,8 @@ async def get_next_action(state, client):
     # Determine if the assistant has stopped generating due to the stop sequence
     is_term = (response.choices[0].finish_reason == 'stop' and \
             response.choices[0].stop_reason != '\n\n')
+    if is_term:
+        print(f"Q: {question}\nA: {content}")
     return content, is_term
 
 def is_correct(state, correct_answer):
@@ -512,15 +515,29 @@ async def main():
     # Set random seed for reproducibility
     random.seed(0)
 
-    def process(example):
+    def process_gsm8k(example):
         example["answer"] = example["answer"].split("\n#### ")[-1].strip()
         return example
 
-    gsm8k = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=42)
-    gsm8k = gsm8k.map(process, num_proc=24)
-    initial_states = [(example["question"], example["answer"]) for example in gsm8k]
-    initial_states = random.sample(initial_states, 100)
-    num_iterations = 50
+    # # gsm8k
+    # gsm8k = load_dataset("openai/gsm8k", "main", split="test").shuffle(seed=42)
+    # gsm8k = gsm8k.map(process_gsm8k, num_proc=24)
+    # initial_states = [(example["question"], example["answer"]) for example in gsm8k]
+    # initial_states = random.sample(initial_states, 100)
+
+    def process_aime(example):
+        # strip leading 0: e.g. "034" -> "34"
+        example["answer"] = str(int(example["answer"].strip()))
+        return example
+
+    # aime
+    aime = load_dataset("AI-MO/aimo-validation-aime", split="train")
+    aime = aime.map(process_aime, num_proc=24)
+    initial_states = [(example["problem"], example["answer"]) for example in aime]
+    # initial_states = random.sample(initial_states, 10)
+
+    # mcts params
+    num_iterations = 200
 
     print("cold starting policy vllm + prm api")
 
