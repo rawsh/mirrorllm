@@ -408,6 +408,12 @@ async def mcts(root_state, correct_answer, num_iterations, session, progress_tra
 
     return root, terminal_nodes
 
+def get_max_depth(node, current_depth=0):
+    """Calculate the maximum depth of the tree from a given node."""
+    if not node.children:
+        return current_depth
+    return max(get_max_depth(child, current_depth + 1) for child in node.children.values())
+
 async def run_mcts(initial_state, correct_answer, num_iterations, session, progress_tracker):
     # async with CONCURRENT_MCTS_SEMAPHORE:
     start_time = time.time()
@@ -415,6 +421,7 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
     end_time = time.time()
 
     best_leaf = await find_best_leaf_by_prm(root, session)
+    max_tree_depth = get_max_depth(root)  # Calculate max depth
 
     terminal_paths = []
     answers = {}
@@ -465,7 +472,8 @@ async def run_mcts(initial_state, correct_answer, num_iterations, session, progr
             "any_correct": is_any_correct,
             "has_terminal_nodes": len(terminal_nodes) > 0,
             "best_prm_path_correct": best_prm_path_correct,
-            "fully_completed": is_fully_completed
+            "fully_completed": is_fully_completed,
+            "max_tree_depth": max_tree_depth  # Add max depth to statistics
         },
         "best_path": {
             "final_state": best_leaf.state,
@@ -534,10 +542,11 @@ async def main():
     aime = load_dataset("AI-MO/aimo-validation-aime", split="train")
     aime = aime.map(process_aime, num_proc=24)
     initial_states = [(example["problem"], example["answer"]) for example in aime]
-    # initial_states = random.sample(initial_states, 10)
+    initial_states = random.sample(initial_states, 10)
 
     # mcts params
-    num_iterations = 200
+    # num_iterations = 200
+    num_iterations = 50
 
     print("cold starting policy vllm + prm api")
 
@@ -600,6 +609,16 @@ async def main():
     print(f"Best-PRM Accuracy: {(best_correct/total_questions)*100:.2f}%")
     print(f"Self-Consistency Accuracy: {(sc_correct/total_questions)*100:.2f}%")
     print(f"Any-Correct Accuracy: {(any_correct/total_questions)*100:.2f}%")
+
+    # Calculate depth statistics
+    max_depths = [r["statistics"]["max_tree_depth"] for r in results]
+    avg_max_depth = sum(max_depths) / len(max_depths)
+    max_max_depth = max(max_depths)
+    min_max_depth = min(max_depths)
+    print(f"\nTree Depth Statistics:")
+    print(f"Average Max Depth: {avg_max_depth:.2f}")
+    print(f"Maximum Tree Depth: {max_max_depth}")
+    print(f"Minimum Tree Depth: {min_max_depth}")
 
     # Write results to both JSONL and TXT
     with open("mcts_results.jsonl", "w") as f_json, open("mcts_results.txt", "w") as f_txt:
