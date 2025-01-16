@@ -6,9 +6,16 @@
 # pip3 install vllm==0.6.3 ray transformers accelerate numpy datasets wandb bitsandbytes tensorboard tqdm evaluate pyext pylatexenc
 # export WANDB_API_KEY=""
 
-num_gpus = 1
-model_save_dir = "/home/ubuntu/save_dir"
-prime_dir = "/home/ubuntu/prime/training"
+num_gpus = 8
+root_dir = "/home/ubuntu"
+model_save_dir = f"{root_dir}/save_dir"
+prime_dir = f"{root_dir}/prime/training"
+tmp_dir = f"{root_dir}/tmp"
+hf_model = "rawsh/SmallThinker-3B"
+hf_dataset = "rawsh/Eurus-2-RL-Data-ProblemsOnly"
+
+# sampling
+response_length = 9000
 
 def download_and_setup_prime():
     """Download PRIME repository and install dependencies during image build"""
@@ -22,10 +29,13 @@ def download_and_setup_prime():
     
     # Create data directory
     os.makedirs("data", exist_ok=True)
+
+    # Create tmp dir
+    os.makedirs(tmp_dir, exist_ok=True)
     
     # Download dataset from Hugging Face
     print("Downloading dataset from Hugging Face...")
-    dataset = load_dataset("PRIME-RL/Eurus-2-RL-Data")
+    dataset = load_dataset(hf_dataset)
     
     # Save train and validation splits to parquet files
     print("Saving dataset splits to parquet files...")
@@ -64,31 +74,31 @@ port=6379
     --port=$port \
     --num-gpus={num_gpus} \
     --include-dashboard=false \
-    --temp-dir=/home/ubuntu/tmp \
+    --temp-dir={tmp_dir} \
     --block &
 
 cd /home/ubuntu/prime/training
 python3 -m verl.trainer.main_ppo \\
     data.train_files=[/home/ubuntu/prime/training/data/train.parquet] \\
     data.val_files=[/home/ubuntu/prime/training/data/validation.parquet] \\
-    data.train_batch_size=128 \\
+    data.train_batch_size=256 \\
     data.val_batch_size=1024 \\
     data.max_prompt_length=1024 \\
-    data.max_response_length=4608 \\
-    actor_rollout_ref.model.path=PowerInfer/SmallThinker-3B-Preview \\
+    data.max_response_length={response_length} \\
+    actor_rollout_ref.model.path={hf_model} \\
     actor_rollout_ref.actor.optim.lr=5e-7 \\
-    actor_rollout_ref.actor.ppo_mini_batch_size=128 \\
-    actor_rollout_ref.actor.ppo_micro_batch_size=16 \\
-    actor_rollout_ref.actor.fsdp_config.param_offload=False \\
-    actor_rollout_ref.actor.fsdp_config.grad_offload=False \\
-    actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \\
+    actor_rollout_ref.actor.ppo_mini_batch_size=256 \\
+    actor_rollout_ref.actor.ppo_micro_batch_size=8 \\
+    actor_rollout_ref.actor.fsdp_config.param_offload=True \\
+    actor_rollout_ref.actor.fsdp_config.grad_offload=True \\
+    actor_rollout_ref.actor.fsdp_config.optimizer_offload=True \\
     actor_rollout_ref.actor.entropy_coeff=0. \\
-    actor_rollout_ref.rollout.log_prob_micro_batch_size=64 \\
+    actor_rollout_ref.rollout.log_prob_micro_batch_size=32 \\
     actor_rollout_ref.rollout.tensor_model_parallel_size=1 \\
     actor_rollout_ref.rollout.name=vllm \\
-    actor_rollout_ref.rollout.gpu_memory_utilization=0.8 \\
-    actor_rollout_ref.ref.log_prob_micro_batch_size=64 \\
-    actor_rollout_ref.ref.fsdp_config.param_offload=False \\
+    actor_rollout_ref.rollout.gpu_memory_utilization=0.75 \\
+    actor_rollout_ref.ref.log_prob_micro_batch_size=32 \\
+    actor_rollout_ref.ref.fsdp_config.param_offload=True \\
     algorithm.kl_ctrl.kl_coef=0.00 \\
     trainer.logger=['console','wandb'] \\
     trainer.project_name=$PROJECT_NAME \\
@@ -98,7 +108,9 @@ python3 -m verl.trainer.main_ppo \\
     trainer.nnodes=1 \\
     trainer.save_freq=8 \\
     trainer.test_freq=8 \\
-    trainer.total_epochs=0.5 \\
+    trainer.total_epochs=1 \\
+    +trainer.total_training_steps=300 \\
+    +trainer.val_before_train=True \\
     data.n_samples=4 \\
     data.filter_accuracy=True \\
     data.accuracy_lower_bound=0.2 \\
@@ -110,11 +122,11 @@ python3 -m verl.trainer.main_ppo \\
     reward_model.rm_coef=5 \\
     reward_model.prime_granularity=token \\
     reward_model.prime_norm=batch_norm \\
-    reward_model.prime_model.path=PowerInfer/SmallThinker-3B-Preview \\
-    reward_model.prime_model.ref_path=PowerInfer/SmallThinker-3B-Preview \\
+    reward_model.prime_model.path={hf_model} \\
+    reward_model.prime_model.ref_path={hf_model} \\
     reward_model.model.input_tokenizer=null \\
-    reward_model.micro_batch_size=16 \\
-    reward_model.prime_model.ref_type=policy \\
+    reward_model.micro_batch_size=8 \\
+    reward_model.prime_model.ref_type=freeze \\
     reward_model.prime_model.update=after \\
     reward_model.prime_model.beta_train=0.05 \\
     reward_model.prime_model.optim.lr=1e-6 \\
